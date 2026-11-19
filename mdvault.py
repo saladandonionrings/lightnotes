@@ -189,6 +189,16 @@ def is_note(name):
     return name.lower().endswith(NOTE_EXT)
 
 
+def child_dir(rel):
+    """Dossier qui contient les sous-notes d'une note : « a/Projet.md » -> « a/Projet »."""
+    return posixpath.join(posixpath.dirname(rel), stem(rel))
+
+
+def descendants(notes, rel, direct=False):
+    pre = child_dir(rel) + '/'
+    return [n for n in notes if n.startswith(pre) and not (direct and '/' in n[len(pre):])]
+
+
 def split_front(text):
     m = FRONT.match(text)
     if m:
@@ -763,22 +773,25 @@ class Index:
     def restrict(self, vault, rel):
         """Ne garde que la note partagée et les fichiers qu'elle intègre."""
         keep = set()
-        info = vault.info(rel) if rel in self.noteset else None
-        if info:
-            keep.add(rel)
+        roots = [rel] + descendants(self.notes, rel) if rel in self.noteset else []   # la note et ses sous-notes
+        for cur in roots:
+            info = vault.info(cur)
+            if not info:
+                continue
+            keep.add(cur)
             for i, seg in enumerate(split_code(info['body'])):
                 if i % 2:
                     continue
                 for m in WIKILINK.finditer(seg):
                     t = m.group(2).strip()
                     if m.group(1) and '.' in t.rsplit('/', 1)[-1] and not is_note(t):
-                        f = self.resolve_file(t, rel)
+                        f = self.resolve_file(t, cur)
                         if f:
                             keep.add(f)
                 for m in re.finditer(r'!\[[^\]]*\]\(\s*<?([^)\s>]+)', seg):
                     t = m.group(1)
                     if not _SCHEME.match(t.lower()) and not t.startswith('/'):
-                        c = posixpath.normpath(posixpath.join(posixpath.dirname(rel), urllib.parse.unquote(t)))
+                        c = posixpath.normpath(posixpath.join(posixpath.dirname(cur), urllib.parse.unquote(t)))
                         if c in self.all_lower.values():
                             keep.add(c)
         self.notes = [n for n in self.notes if n in keep]
@@ -1507,6 +1520,15 @@ select.field{appearance:auto}
 .badge.w{background:var(--accent-bg);color:var(--link)}
 .vault small{display:block;font-weight:400;font-size:11.5px;color:var(--muted)}
 .ro .tree-row .add{display:none}
+summary.tree-row.parent a.name{color:inherit;text-decoration:none}
+summary.tree-row.current{background:var(--accent-bg);color:var(--fg);font-weight:550}
+.crumbs a{color:inherit;text-decoration:none}.crumbs a:hover{color:var(--fg)}
+.subpages{margin-top:2.6em;padding-top:1.2em;border-top:1px solid var(--border)}
+.subpages .h3{display:flex;gap:8px;align-items:center}
+.sublist{display:flex;flex-direction:column;gap:2px;margin:0 -10px 12px}
+.subitem{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;color:var(--fg);text-decoration:none}
+.subitem:hover{background:var(--hover)}.subitem .i{color:var(--muted)}.subitem small{margin-left:auto;color:var(--faint);font-size:12px}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--muted);padding-left:8px}.btn.ghost:hover{color:var(--fg);background:var(--hover)}
 
 /* ---- petits écrans ---- */
 @media (max-width:1100px){
@@ -1659,9 +1681,9 @@ if(curRow){const s=$('.side-scroll');s.scrollTop=Math.max(0,curRow.offsetTop-s.c
 $('#tree').addEventListener('click',e=>{const b=e.target.closest('button.add');if(b){e.preventDefault();e.stopPropagation();newNote(b.dataset.folder);}});
 
 /* ---------- notes : création, récentes ---------- */
-async function newNote(base,name){
+async function newNote(base,name,title){
   if(!CAN)return;
-  if(!name)name=await ask(base?'Nouvelle note dans « '+base+' »':'Nouvelle note','', 'Créer','Astuce : « dossier/nom » pour créer dans un sous-dossier.');
+  if(!name)name=await ask(title||(base?'Nouvelle note dans « '+base+' »':'Nouvelle note'),'', 'Créer','Astuce : « dossier/nom » pour créer dans un sous-dossier.');
   if(!name)return;
   try{const j=await api('/api/new',{name,base:base||''});location.href=j.url;}catch(e){toast('Création impossible : '+e.message,'err');}
 }
@@ -1742,7 +1764,7 @@ const peekCache=new Map();let peekT=null,peekEl=null,peekFor=null,peekPend=null;
 function hidePeek(){clearTimeout(peekT);peekPend=null;if(peekEl){peekEl.remove();peekEl=null;peekFor=null;}}
 document.addEventListener('mouseover',e=>{
   if(e.target.closest('#peek')){clearTimeout(peekT);return;}
-  const a=e.target.closest('a.wikilink:not(.missing),.panel a.item,a.card,a.sres');
+  const a=e.target.closest('a.wikilink:not(.missing),.panel a.item,a.card,a.sres,a.subitem,summary.parent a.name');
   if(!a){if(peekEl||peekPend){clearTimeout(peekT);peekPend=null;peekT=setTimeout(hidePeek,280);}return;}
   if(a===peekFor||a===peekPend)return;
   const href=a.getAttribute('href')||'';if(!href.startsWith(NP))return;
@@ -1804,7 +1826,9 @@ if(NOTE){
   pushRecent(NOTE);
   const view=$('#view'),art=$('#art'),ed=$('#editor'),ta=$('#src'),pv=$('#preview'),wrap=$('.edwrap'),
         st=$('#status'),wc=$('#wc'),ps=$('#pos'),bPrev=$('#b-prev'),tt=$('#ntitle');
-  const NAME=tt?tt.textContent.trim():NOTE;
+  const NAME=tt?tt.textContent.trim():NOTE,CHILD=M.dataset.child,KIDS=+(M.dataset.kids||0);
+  const newChild=()=>newNote(CHILD,null,'Nouvelle sous-note de « '+NAME+' »');
+  const bc=$('#b-child');if(bc)bc.onclick=newChild;
   let mtime=M.dataset.mtime,dirty=false,saving=false,conflict=false,timer=null,ptimer=null;
   const setDirty=v=>{dirty=v;document.body.classList.toggle('is-dirty',v);};
   const setStatus=(t,c)=>{st.textContent=t;st.className='status '+(c||'');};
@@ -2026,7 +2050,7 @@ if(NOTE){
     catch(e){toast('Renommage impossible : '+e.message,'err');if(tt)tt.textContent=NAME;}
   }
   async function del(){
-    if(!await confirmBox('Supprimer « '+NAME+' » ?','La note sera déplacée dans le dossier .trash/ de cet espace.','Supprimer',true))return;
+    if(!await confirmBox('Supprimer « '+NAME+' » ?',(KIDS?'La note et ses '+KIDS+' sous-note(s) seront déplacées':'La note sera déplacée')+' dans le dossier .trash/ de cet espace.','Supprimer',true))return;
     try{await api('/api/delete',{path:NOTE});setDirty(false);LS.set('flash','Note déplacée dans .trash/');location.href=B+'/';}
     catch(e){toast('Suppression impossible : '+e.message,'err');}
   }
@@ -2036,6 +2060,7 @@ if(NOTE){
     tt.addEventListener('paste',e=>{e.preventDefault();document.execCommand('insertText',false,(e.clipboardData.getData('text/plain')||'').replace(/\s+/g,' '));});
   }
   $('#b-more').onclick=e=>openMenu(e.currentTarget,[
+    CAN&&{icon:'fileplus',label:'Nouvelle sous-note',act:newChild},
     CAN&&{icon:'pencil',label:'Renommer…',act:()=>ask('Renommer la note',NAME,'Renommer','Les [[liens]] des autres notes seront mis à jour.').then(v=>{if(v&&v!==NAME)rename(v);})},
     {icon:'link',label:'Copier le lien [[…]]',act:()=>copyText('[['+NAME+']]','Lien copié')},
     MDV.owner&&{icon:'share',label:'Partager la note…',act:()=>location.href='/shares?space='+encodeURIComponent(MDV.space)+'&note='+encodeURIComponent(NOTE)},
@@ -2150,14 +2175,28 @@ def build_tree(notes):
 
 def tree_html(vault, node, current, prefix=''):
     out = ['<ul>']
+    parents = {stem(r): r for r in node['f']}     # note « X.md » + dossier « X/ » = note parente
+    used = set()
     for name in sorted(node['d'], key=str.lower):
         path = prefix + name
         op = ' open' if current and current.startswith(path + '/') else ''
+        pr = parents.get(name)
+        if pr:
+            used.add(pr)
+            cur = ' current' if pr == current else ''
+            out.append('<li class="dir"><details data-path="%s"%s><summary class="tree-row parent%s">%s'
+                       '<a class="name" href="%s" title="%s">%s</a>'
+                       '<button class="ib add" data-folder="%s" title="Nouvelle sous-note">%s</button></summary>%s</details></li>'
+                       % (esc(path), ' open' if op or cur else '', cur, icon('chev', 'chev'), esc(vault.url(pr)), esc(pr),
+                          esc(name), esc(path), icon('plus'), tree_html(vault, node['d'][name], current, path + '/')))
+            continue
         out.append('<li class="dir"><details data-path="%s"%s><summary class="tree-row">%s<span class="name">%s</span>'
                    '<button class="ib add" data-folder="%s" title="Nouvelle note dans ce dossier">%s</button></summary>%s</details></li>'
                    % (esc(path), op, icon('chev', 'chev'), esc(name), esc(path), icon('plus'),
                       tree_html(vault, node['d'][name], current, path + '/')))
     for rel in sorted(node['f'], key=str.lower):
+        if rel in used:
+            continue
         cls = ' current' if rel == current else ''
         out.append('<li class="file"><a class="tree-row%s" href="%s" title="%s"><span class="name">%s</span></a></li>'
                    % (cls, esc(vault.url(rel)), esc(rel), esc(stem(rel))))
@@ -2726,7 +2765,12 @@ class Handler(BaseHTTPRequestHandler):
         body_html = render(v, idx, rel, info['body'], interactive=not v.ro)
         title = stem(rel)
         folders = rel.split('/')[:-1]
-        crumbs = ''.join('<span>%s</span><span class="sep">/</span>' % esc(f) for f in folders) + \
+        crumbs = ''
+        for i, f in enumerate(folders):
+            par = idx.by_path.get('/'.join(folders[:i + 1]).lower())     # dossier d'une note parente -> lien
+            crumbs += ('<a href="%s">%s</a>' % (esc(v.url(par)), esc(f)) if par else '<span>%s</span>' % esc(f)) + \
+                '<span class="sep">/</span>'
+        crumbs += \
             '<b>%s</b><span class="dot" title="Modifications non enregistrées"></span>' % esc(title)
         actions = ('<span class="badge">lecture seule</span>' if v.ro else '') + (
                    '<div class="seg"%s><button id="m-read" class="on" title="Lecture (Ctrl+E)">%s<span>Lecture</span></button>'
@@ -2743,14 +2787,14 @@ class Handler(BaseHTTPRequestHandler):
             '<div id="view" class="content">'
             '<h1 class="title" id="ntitle"%s>%s</h1>'
             '<div class="meta"><span>Modifiée le %s</span><span id="words"></span>%s</div>%s'
-            '<article class="md" id="art">%s</article></div>'
+            '<article class="md" id="art">%s</article>%s</div>'
             '<div id="editor" hidden><div class="edwrap"><textarea id="src" spellcheck="true" lang="fr" '
             'placeholder="Commencez à écrire…  ([[ pour lier une note)">\n%s</textarea>'
             '<div id="preview" class="md"></div></div>'
             '<div class="edfoot"><span id="status" class="status">Sauvegarde automatique</span><span class="sp"></span>'
             '<span id="pos"></span><span id="wc"></span><span><kbd>?</kbd> raccourcis</span></div></div>'
         ) % (' contenteditable="plaintext-only" spellcheck="false" title="Cliquer pour renommer"' if v.can_create else '',
-             esc(title), fmt_time(info['mtime']), tags_meta, fm, body_html, esc(read_raw(p)))
+             esc(title), fmt_time(info['mtime']), tags_meta, fm, body_html, self.subpages(idx, rel), esc(read_raw(p)))
 
         back = sorted((n for n in idx.notes if n != rel and rel in idx.out_links(v, n)), key=str.lower)
         outl = sorted(idx.out_links(v, rel), key=str.lower)
@@ -2767,8 +2811,24 @@ class Handler(BaseHTTPRequestHandler):
         right += ''.join('<a class="item" href="%s" title="%s"><span class="nm">%s</span></a>'
                          % (esc(v.url(o)), esc(o), esc(stem(o))) for o in outl) or '<p class="empty">Aucun lien.</p>'
         right += '</div>'
-        attr = ' data-path="%s" data-mtime="%s"' % (esc(rel), info['mtime'])
+        attr = ' data-path="%s" data-mtime="%s" data-child="%s" data-kids="%d"' % (
+            esc(rel), info['mtime'], esc(child_dir(rel)), len(descendants(idx.notes, rel)))
         self.send_page(title, main, right, current=rel, idx=idx, mainattr=attr, crumbs=crumbs, actions=actions)
+
+    def subpages(self, idx, rel):
+        """Liste des sous-notes directes, façon Notion."""
+        v = self.vault
+        kids = sorted(descendants(idx.notes, rel, direct=True), key=lambda r: stem(r).lower())
+        add = ('<button class="btn ghost" id="b-child">%s Ajouter une sous-note</button>' % icon('plus')
+               if v.can_create else '')
+        if not kids:
+            return '<div class="subpages" style="border:0;margin-top:1.6em;padding:0">%s</div>' % add if add else ''
+        items = ''.join('<a class="subitem" href="%s">%s<span>%s</span>%s</a>'
+                        % (esc(v.url(k)), icon('file'), esc(stem(k)),
+                           '<small>%d sous-note(s)</small>' % len(descendants(idx.notes, k)) if descendants(idx.notes, k) else '')
+                        for k in kids)
+        return ('<section class="subpages"><div class="h3">Sous-notes <span class="badge">%d</span></div>'
+                '<div class="sublist">%s</div>%s</section>' % (len(kids), items, add))
 
     def search_page(self, q):
         v = self.vault
@@ -3072,6 +3132,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'error': 'une note porte déjà ce nom'}, 409)
         new_rel = self.rel_of(dst)
         idx = self.vault.index()
+        old_dir, new_dir = src.parent / stem(src.name), dst.parent / stem(dst.name)
+        move_dir = old_dir.is_dir() and not old_dir.is_symlink() and old_dir != new_dir
+        if move_dir and new_dir.exists():
+            return self.send_json({'error': 'un dossier porte déjà ce nom'}, 409)
+        mapping = {old_rel: new_rel}             # la note et, si besoin, toutes ses sous-notes
+        if move_dir:
+            oc, nc = child_dir(old_rel), child_dir(new_rel)
+            for c in descendants(idx.notes, old_rel):
+                mapping[c] = nc + c[len(oc):]
         new_stem = stem(new_rel)
         if len(idx.by_stem.get(new_stem.lower(), [])) > (1 if stem(old_rel).lower() == new_stem.lower() else 0):
             new_target = new_rel.rsplit('.', 1)[0]   # nom ambigu : on écrit le chemin
@@ -3080,16 +3149,21 @@ class Handler(BaseHTTPRequestHandler):
         updated = 0
         for n in idx.notes:
             info = self.vault.info(n)
-            if not info or not any(idx.resolve_note(t, n) == old_rel for t in info['wl']):
+            if not info or not any(idx.resolve_note(t, n) in mapping for t in info['wl']):
                 continue
             np_ = self.vault.root / n
             raw = read_raw(np_)
 
             def fix(m):
-                if m.group(2).strip() and idx.resolve_note(m.group(2), n) == old_rel:
-                    return '%s[[%s%s%s]]' % (m.group(1), new_target, m.group(3) or '',
-                                             '|' + m.group(4) if m.group(4) is not None else '')
-                return m.group(0)
+                r = idx.resolve_note(m.group(2), n) if m.group(2).strip() else None
+                if r == old_rel:
+                    tgt = new_target
+                elif r in mapping and '/' in m.group(2):          # lien par chemin vers une sous-note
+                    tgt = mapping[r].rsplit('.', 1)[0]
+                else:
+                    return m.group(0)
+                return '%s[[%s%s%s]]' % (m.group(1), tgt, m.group(3) or '',
+                                         '|' + m.group(4) if m.group(4) is not None else '')
             parts = FENCE.split(raw)
             for i in range(0, len(parts), 2):
                 parts[i] = WIKILINK.sub(fix, parts[i])
@@ -3099,7 +3173,11 @@ class Handler(BaseHTTPRequestHandler):
                 updated += 1
         dst.parent.mkdir(parents=True, exist_ok=True)
         os.rename(src, dst)
-        self.store.move_shared_note(self.vault.owner['id'], self.vault.space, old_rel, new_rel)
+        if move_dir:
+            new_dir.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(old_dir, new_dir)
+        for a, b in mapping.items():
+            self.store.move_shared_note(self.vault.owner['id'], self.vault.space, a, b)
         self.send_json({'url': self.vault.url(new_rel), 'updated': updated})
 
     def api_delete(self, d):
@@ -3113,9 +3191,18 @@ class Handler(BaseHTTPRequestHandler):
         while dest.exists():
             dest = trash / ('%s (%d)%s' % (p.stem, k, p.suffix))
             k += 1
-        shutil.move(str(p), str(dest))
         rel, v = self.rel_of(p), self.vault
-        self.store.purge_shares(lambda s: (s['owner'], s['space'], s['note']) == (v.owner['id'], v.space, rel))
+        kids = p.parent / stem(p.name)
+        shutil.move(str(p), str(dest))
+        if kids.is_dir() and not kids.is_symlink():          # les sous-notes suivent leur parente
+            kd, k = trash / kids.name, 1
+            while kd.exists():
+                kd = trash / ('%s (%d)' % (kids.name, k))
+                k += 1
+            shutil.move(str(kids), str(kd))
+        pre = child_dir(rel) + '/'
+        self.store.purge_shares(lambda s: (s['owner'], s['space']) == (v.owner['id'], v.space)
+                                and s['note'] and (s['note'] == rel or s['note'].startswith(pre)))
         self.send_json({'url': self.vault.base + '/'})
 
     def api_toggle(self, d):
