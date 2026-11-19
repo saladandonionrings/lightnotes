@@ -1,23 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-mdvault — bases de notes Markdown protégées par mot de passe, façon Trilium.
-Un seul fichier, aucune dépendance obligatoire.
+mdvault — bases de notes Markdown chiffrées, protégées par mot de passe, façon Trilium.
+Un seul fichier ; seule dépendance : python3-cryptography (AES-256-GCM).
 
-Une « base » est un dossier de notes (par exemple une par mission), protégé
-par son propre mot de passe. Au premier lancement sur un dossier, mdvault
-demande de choisir ce mot de passe.
+Une « base » est un dossier (par exemple une par mission) entièrement chiffré :
+contenu des notes, images, mais aussi noms des notes et des dossiers. La clé est
+dérivée du mot de passe (scrypt), n'existe qu'en mémoire pendant que la base est
+déverrouillée, et est effacée au verrouillage, après inactivité ou à l'arrêt.
 
 Utilisation :
-    python3 mdvault.py DOSSIER [-p PORT] [--host HOTE] [--no-browser]
+    python3 mdvault.py DOSSIER                      créer (1er lancement) ou ouvrir une base
+    python3 mdvault.py DOSSIER --import SOURCE      chiffrer dans la base un dossier de notes en clair
+    python3 mdvault.py DOSSIER --export CIBLE       tout déchiffrer dans un dossier (sauvegarde en clair)
+    Options : -p PORT, --host HOTE, --lock-after MIN, --no-browser, --cert/--key, --proxy
 
-    Exemple : python3 mdvault.py ~/missions/client-acme
-
-    Le dossier contient vos notes (.md) et un sous-dossier caché .mdvault/
-    (empreinte scrypt du mot de passe et sessions, lisibles par vous seul).
-
-Exposition sur un réseau : utilisez TLS (--cert/--key) ou un reverse proxy
-HTTPS (--proxy).
+Images : coller (Ctrl+V), glisser-déposer, ou bouton « image » dans l'éditeur.
+Formats PNG, JPEG, GIF, WebP ; métadonnées (EXIF, GPS…) retirées avant chiffrement.
 
 Raccourcis principaux (touche « ? » pour la liste complète) :
     Ctrl+K / Ctrl+O   palette : ouvrir, créer, rechercher
@@ -42,7 +41,6 @@ import os
 import posixpath
 import re
 import secrets
-import shutil
 import ssl
 import sys
 import threading
@@ -54,6 +52,12 @@ import webbrowser
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+try:
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+except ImportError:  # vérifié au démarrage
+    AESGCM = InvalidTag = None
 
 try:
     import markdown as _markdown
@@ -86,12 +90,15 @@ VIDEO_EXT = {'mp4', 'webm', 'mov', 'mkv', 'ogv'}
 SKIP_DIRS = {'node_modules', '__pycache__'}
 
 # --- paramètres de sécurité ---
-SESSION_IDLE = 12 * 3600          # inactivité maximale d'une session
-SESSION_MAX = 7 * 24 * 3600       # durée de vie absolue d'une session
+SESSION_MAX = 12 * 3600           # durée de vie absolue d'une session (l'inactivité : --lock-after)
 MAX_BODY = 5 * 1024 * 1024        # taille maximale d'une note envoyée
+MAX_UPLOAD = 15 * 1024 * 1024     # taille maximale d'une image
+ATTACH_DIR = 'Images'             # dossier des images ajoutées
+KDF_N, KDF_R, KDF_P = 2 ** 16, 8, 1   # scrypt : ~64 Mo et ~0,2 s par essai de mot de passe
+PAD = 512                         # tailles chiffrées arrondies (masque la taille exacte)
+AAD_DEK, AAD_MANIFEST, AAD_OBJ = b'mdvault/dek/v1', b'mdvault/manifest/v1', b'mdvault/obj/'
 MAX_FORM = 16 * 1024              # taille maximale d'un formulaire
-PW_MIN, PW_MAX = 10, 1024
-SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 15, 8, 1
+PW_MIN, PW_MAX = 12, 1024
 HASH_SEM = threading.BoundedSemaphore(2)   # limite la mémoire consommée par scrypt
 COMMON_PW = {'motdepasse', 'password', 'password123', '1234567890', '12345678910', 'azertyuiop',
              'qwertyuiop', 'motdepasse1', 'iloveyou12', 'administrateur', 'administrator'}
@@ -131,6 +138,7 @@ ICONS = {
     'link': '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
     'hash': '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
     'x': '<path d="M18 6 6 18M6 6l12 12"/>',
+    'image': '<rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="m20.5 15.5-4.5-4.5-9 9"/>',
     'folder': '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/>',
     'folderplus': '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/><path d="M12 10.5v5M9.5 13h5"/>',
     'logo': '<path d="M5 19V6.5l7 6.5 7-6.5V19"/>',
@@ -160,7 +168,7 @@ def slugify(value, sep='-'):
 # Identifiants utilisés par l'interface : un titre de note ne doit pas pouvoir les masquer.
 RESERVED_IDS = {'app', 'side', 'center', 'top', 'main', 'scroller', 'right', 'tree', 'view', 'ntitle', 'words',
                 'art', 'editor', 'src', 'preview', 'status', 'pos', 'wc', 'outline', 'outline-n', 'toasts', 'ov',
-                'ac', 'peek', 'b-new', 'b-collapse', 'b-space', 'b-child', 'b-folder', 'b-lock', 'b-switch', 'b-theme', 'b-help', 'b-left', 'b-prev', 'b-more',
+                'ac', 'peek', 'b-new', 'b-collapse', 'b-space', 'b-child', 'b-folder', 'b-lock', 'b-img', 'b-switch', 'b-theme', 'b-help', 'b-left', 'b-prev', 'b-more',
                 'b-right', 'm-read', 'm-edit', 'q-new', 'q-search', 'mdv'}
 
 
@@ -234,19 +242,6 @@ def plain_snippet(body, n=150):
     return s[:n] + ('…' if len(s) > n else '')
 
 
-def atomic_write(p, content):
-    p = Path(p)
-    tmp = p.with_name('.' + p.name + '.mdvault-tmp')
-    with open(tmp, 'w', encoding='utf-8', newline='') as f:
-        f.write(content)
-    if p.exists():
-        try:
-            shutil.copymode(p, tmp)
-        except OSError:
-            pass
-    os.replace(tmp, p)
-
-
 def write_private(p, obj):
     """Écriture atomique d'un fichier JSON lisible uniquement par son propriétaire."""
     p = Path(p)
@@ -257,11 +252,6 @@ def write_private(p, obj):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, p)
-
-
-def read_raw(p):
-    with open(p, encoding='utf-8', errors='replace', newline='') as f:
-        return f.read()
 
 
 def ct_eq(a, b):
@@ -281,37 +271,6 @@ def _unb64(s):
     return base64.urlsafe_b64decode(s + '=' * (-len(s) % 4))
 
 
-def hash_password(pw):
-    salt = os.urandom(16)
-    pwb = pw.encode('utf-8')
-    if hasattr(hashlib, 'scrypt'):
-        try:
-            h = hashlib.scrypt(pwb, salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P, maxmem=64 * 1024 * 1024, dklen=32)
-            return 'scrypt$%d$%d$%d$%s$%s' % (SCRYPT_N, SCRYPT_R, SCRYPT_P, _b64(salt), _b64(h))
-        except (ValueError, MemoryError):
-            pass
-    it = 600000
-    return 'pbkdf2$%d$%s$%s' % (it, _b64(salt), _b64(hashlib.pbkdf2_hmac('sha256', pwb, salt, it)))
-
-
-def verify_password(pw, stored):
-    try:
-        parts = stored.split('$')
-        pwb = pw.encode('utf-8')
-        if parts[0] == 'scrypt':
-            n, r, p = (int(x) for x in parts[1:4])
-            ref = _unb64(parts[5])
-            h = hashlib.scrypt(pwb, salt=_unb64(parts[4]), n=n, r=r, p=p, maxmem=64 * 1024 * 1024, dklen=len(ref))
-        elif parts[0] == 'pbkdf2':
-            ref = _unb64(parts[3])
-            h = hashlib.pbkdf2_hmac('sha256', pwb, _unb64(parts[2]), int(parts[1]))
-        else:
-            return False
-        return hmac.compare_digest(h, ref)
-    except Exception:
-        return False
-
-
 def password_problem(pw, name=''):
     if not isinstance(pw, str) or len(pw) < PW_MIN:
         return 'au moins %d caractères' % PW_MIN
@@ -325,93 +284,336 @@ def password_problem(pw, name=''):
     return None
 
 
-# --------------------------------------------------------------------------
-# Base : mot de passe et sessions
-# --------------------------------------------------------------------------
-
 def _sha(tok):
     return hashlib.sha256(tok.encode('utf-8')).hexdigest()
 
 
-class Base:
-    """Une base = un dossier de notes + .mdvault/ (empreinte du mot de passe, sessions)."""
+# --------------------------------------------------------------------------
+# Stockage chiffré : clé, objets, manifeste
+# --------------------------------------------------------------------------
+
+class Locked(Exception):
+    """La base est verrouillée : la clé n'est pas en mémoire."""
+
+
+def _write_blob(p, blob):
+    tmp = p.with_name('.' + p.name + '.tmp')
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'wb') as f:
+        f.write(blob)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, p)
+
+
+class Store:
+    """Base chiffrée. Sur le disque :
+         .mdvault/keys.json   clé de données (aléatoire) chiffrée par une clé dérivée du mot de passe (scrypt)
+         .mdvault/manifest    chemins, dossiers et dates des notes (chiffré)
+         objects/<aléatoire>  contenu de chaque note ou image (chiffré, taille arrondie)
+       Chiffrement authentifié AES-256-GCM. La clé n'existe qu'en mémoire, base déverrouillée."""
 
     def __init__(self, root):
         self.root = Path(root).expanduser().resolve()
+        self.name = self.root.name
         self.meta = self.root / '.mdvault'
-        self.afile = self.meta / 'auth.json'
-        self.sfile = self.meta / 'sessions.json'
+        self.objs = self.root / 'objects'
+        self.kfile = self.meta / 'keys.json'
+        self.mfile = self.meta / 'manifest'
         self.lock = threading.RLock()
-        self._sess = {}
-        self._hash = None
-        if self.initialized():
-            with open(self.afile, encoding='utf-8') as f:
-                self._hash = json.load(f)['hash']
-            self._load_sessions()
+        self._aead = None
+        self._m = None
 
+    # --- clé ---
     def initialized(self):
-        return self.afile.is_file()
+        return self.kfile.is_file()
 
-    def init(self, pw):
-        self.root.mkdir(parents=True, exist_ok=True)
-        self.meta.mkdir(mode=0o700, exist_ok=True)
-        try:
-            os.chmod(self.meta, 0o700)
-        except OSError:
-            pass
-        self._hash = hash_password(pw)
-        write_private(self.afile, {'version': 1, 'hash': self._hash, 'created': int(time.time())})
+    def is_unlocked(self):
+        return self._aead is not None
 
-    def check(self, pw):
-        with HASH_SEM:
-            return verify_password(pw or '', self._hash or '')
-
-    # --- sessions (seul le hachage SHA-256 du jeton est conservé) ---
     @staticmethod
-    def _alive(s, now):
-        return now - s['c'] < SESSION_MAX and now - s['l'] < SESSION_IDLE
+    def _kek(pw, salt, n, r, p):
+        if not (2 ** 14 <= n <= 2 ** 20 and 1 <= r <= 16 and 1 <= p <= 4):
+            raise ValueError('paramètres de dérivation invalides')
+        with HASH_SEM:
+            return hashlib.scrypt(pw.encode('utf-8'), salt=salt, n=n, r=r, p=p, maxmem=256 * 1024 * 1024, dklen=32)
 
-    def _load_sessions(self):
+    def create(self, pw):
+        for d in (self.root, self.meta, self.objs):
+            d.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(d, 0o700)
+        dek, salt, nonce = AESGCM.generate_key(bit_length=256), os.urandom(16), os.urandom(12)
+        wrapped = AESGCM(self._kek(pw, salt, KDF_N, KDF_R, KDF_P)).encrypt(nonce, dek, AAD_DEK)
+        write_private(self.kfile, {'version': 1, 'cipher': 'AES-256-GCM', 'created': int(time.time()),
+                                   'kdf': {'name': 'scrypt', 'n': KDF_N, 'r': KDF_R, 'p': KDF_P, 'salt': _b64(salt)},
+                                   'nonce': _b64(nonce), 'key': _b64(wrapped)})
+        with self.lock:
+            self._aead, self._m = AESGCM(dek), {'files': {}, 'dirs': []}
+            self._save()
+
+    def unlock(self, pw):
+        """Vérifie le mot de passe et charge la clé. Faux si le mot de passe est incorrect."""
         try:
-            with open(self.sfile, encoding='utf-8') as f:
-                d = json.load(f)
-        except (OSError, ValueError):
-            d = {}
-        now = time.time()
-        self._sess = {k: v for k, v in d.items() if isinstance(v, dict) and self._alive(v, now)}
+            with open(self.kfile, encoding='utf-8') as f:
+                k = json.load(f)
+            kd = k['kdf']
+            kek = self._kek(pw or '', _unb64(kd['salt']), int(kd['n']), int(kd['r']), int(kd['p']))
+            dek = AESGCM(kek).decrypt(_unb64(k['nonce']), _unb64(k['key']), AAD_DEK)
+        except (InvalidTag, KeyError, ValueError, TypeError):
+            return False
+        with self.lock:
+            if self._aead is None:
+                self._aead = AESGCM(dek)
+                try:
+                    self._m = self._load()
+                except Exception:
+                    self._aead = None
+                    raise
+        return True
 
-    def _save_sessions(self):
-        write_private(self.sfile, self._sess)
+    def lock_now(self):
+        with self.lock:
+            self._aead, self._m = None, None
 
-    def new_session(self):
+    # --- chiffrement ---
+    def _seal(self, data, aad):
+        a = self._aead
+        if a is None:
+            raise Locked()
+        body = len(data).to_bytes(8, 'big') + data
+        body += b'\0' * (-len(body) % PAD)            # masque la taille exacte
+        nonce = os.urandom(12)
+        return nonce + a.encrypt(nonce, body, aad)
+
+    def _open(self, blob, aad):
+        a = self._aead
+        if a is None:
+            raise Locked()
+        try:
+            body = a.decrypt(blob[:12], blob[12:], aad)
+        except InvalidTag:
+            raise ValueError('donnée chiffrée altérée ou corrompue')
+        return body[8:8 + int.from_bytes(body[:8], 'big')]
+
+    def _load(self):
+        if not self.mfile.exists():
+            return {'files': {}, 'dirs': []}
+        with open(self.mfile, 'rb') as f:
+            return json.loads(self._open(f.read(), AAD_MANIFEST))
+
+    def _save(self):
+        _write_blob(self.mfile, self._seal(json.dumps(self._m, ensure_ascii=False).encode('utf-8'), AAD_MANIFEST))
+
+    def _need(self):
+        if self._m is None:
+            raise Locked()
+        return self._m
+
+    # --- fichiers (chemins relatifs posix) ---
+    def files(self):
+        with self.lock:
+            return {k: dict(v) for k, v in self._need()['files'].items()}
+
+    def dirs(self):
+        with self.lock:
+            m = self._need()
+            out = set(m['dirs'])
+            for p in list(m['files']) + m['dirs']:
+                parts = p.split('/')
+                out.update('/'.join(parts[:i]) for i in range(1, len(parts)))
+            return out
+
+    def stat(self, rel):
+        with self.lock:
+            f = self._need()['files'].get(rel)
+            return dict(f) if f else None
+
+    def is_file(self, rel):
+        return self.stat(rel) is not None
+
+    def is_dir(self, rel):
+        return bool(rel) and rel in self.dirs()
+
+    def exists(self, rel):
+        return self.is_file(rel) or self.is_dir(rel)
+
+    def read(self, rel):
+        f = self.stat(rel)
+        if not f:
+            raise FileNotFoundError(rel)
+        with open(self.objs / f['id'], 'rb') as fh:
+            return self._open(fh.read(), AAD_OBJ + f['id'].encode())
+
+    def write(self, rel, data):
+        oid = secrets.token_hex(16)                    # copie sur écriture : nouvel objet à chaque version
+        _write_blob(self.objs / oid, self._seal(data, AAD_OBJ + oid.encode()))
+        with self.lock:
+            m = self._need()
+            old = m['files'].get(rel)
+            now = time.time_ns()
+            mt = max(now, old['mt'] + 1) if old else now
+            m['files'][rel] = {'id': oid, 'mt': mt, 'sz': len(data)}
+            self._save()
+        if old:
+            try:
+                (self.objs / old['id']).unlink()
+            except OSError:
+                pass
+        return mt
+
+    def mkdir(self, rel):
+        with self.lock:
+            m = self._need()
+            if rel not in m['dirs']:
+                m['dirs'].append(rel)
+                self._save()
+
+    def move(self, src, dst):
+        with self.lock:
+            m = self._need()
+            if src in m['files']:
+                m['files'][dst] = m['files'].pop(src)
+            else:
+                pre = src + '/'
+                for k in [k for k in m['files'] if k.startswith(pre)]:
+                    m['files'][dst + k[len(src):]] = m['files'].pop(k)
+                m['dirs'] = [dst + d[len(src):] if d == src or d.startswith(pre) else d for d in m['dirs']]
+                if dst not in m['dirs']:
+                    m['dirs'].append(dst)
+            self._save()
+
+    def trash(self, rel):
+        """Déplace une note ou un dossier dans .trash/ (toujours chiffré)."""
+        name = rel.rsplit('/', 1)[-1]
+        stem_, dot, ext = name.rpartition('.') if self.is_file(rel) and '.' in name else (name, '', '')
+        dest, k = '.trash/' + name, 1
+        while self.exists(dest):
+            dest = '.trash/%s (%d)%s%s' % (stem_, k, dot, ext)
+            k += 1
+        self.move(rel, dest)
+
+
+class Sessions:
+    """Sessions en mémoire uniquement. Quand il n'en reste plus, la base se verrouille."""
+
+    def __init__(self, idle, on_empty):
+        self.idle, self.on_empty = idle, on_empty
+        self.lock = threading.Lock()
+        self._s = {}
+
+    def _alive(self, s, now):
+        return now - s['c'] < SESSION_MAX and now - s['l'] < self.idle
+
+    def new(self):
         tok, now = secrets.token_urlsafe(32), time.time()
         with self.lock:
-            self._sess = {k: v for k, v in self._sess.items() if self._alive(v, now)}
-            self._sess[_sha(tok)] = {'c': now, 'l': now, 'csrf': secrets.token_urlsafe(32)}
-            self._save_sessions()
+            self._s[_sha(tok)] = {'c': now, 'l': now, 'csrf': secrets.token_urlsafe(32)}
         return tok
 
-    def session(self, tok):
+    def get(self, tok):
         if not tok or len(tok) > 128:
             return None, None
         k, now = _sha(tok), time.time()
         with self.lock:
-            s = self._sess.get(k)
-            if not s:
-                return None, None
-            if not self._alive(s, now):
-                del self._sess[k]
-                self._save_sessions()
-                return None, None
-            if now - s['l'] > 120:
+            s = self._s.get(k)
+            if s and self._alive(s, now):
                 s['l'] = now
-                self._save_sessions()
-            return k, s
+                return k, s
+            self._s.pop(k, None)
+        self.sweep()
+        return None, None
 
-    def drop_session(self, key):
+    def sweep(self):
+        now = time.time()
         with self.lock:
-            if self._sess.pop(key, None) is not None:
-                self._save_sessions()
+            self._s = {k: v for k, v in self._s.items() if self._alive(v, now)}
+            empty = not self._s
+        if empty:
+            self.on_empty()
+
+    def clear(self):
+        with self.lock:
+            self._s = {}
+        self.on_empty()
+
+
+# --------------------------------------------------------------------------
+# Images : vérification du format et retrait des métadonnées (EXIF, GPS…)
+# --------------------------------------------------------------------------
+
+def sniff_image(b):
+    if b.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'png', 'image/png'
+    if b.startswith(b'\xff\xd8\xff'):
+        return 'jpg', 'image/jpeg'
+    if b[:6] in (b'GIF87a', b'GIF89a'):
+        return 'gif', 'image/gif'
+    if len(b) > 12 and b[:4] == b'RIFF' and b[8:12] == b'WEBP':
+        return 'webp', 'image/webp'
+    return None
+
+
+def strip_metadata(data, ext):
+    """Retire EXIF/XMP/commentaires (position GPS, appareil, auteur…). Lève ValueError si l'image est malformée."""
+    n = len(data)
+    if ext == 'png':
+        out, i = [data[:8]], 8
+        while i + 12 <= n:
+            ln, typ = int.from_bytes(data[i:i + 4], 'big'), data[i + 4:i + 8]
+            end = i + 12 + ln
+            if end > n:
+                raise ValueError
+            if typ not in (b'tEXt', b'zTXt', b'iTXt', b'eXIf', b'tIME'):
+                out.append(data[i:end])
+            i = end
+            if typ == b'IEND':
+                break
+        return b''.join(out)
+    if ext == 'jpg':
+        out, i = [b'\xff\xd8'], 2
+        while i < n:
+            if data[i] != 0xFF:
+                raise ValueError
+            while i < n and data[i] == 0xFF:
+                i += 1
+            if i >= n:
+                raise ValueError
+            mk = data[i]
+            i += 1
+            if mk == 0xD9:
+                out.append(b'\xff\xd9')
+                break
+            if mk == 0x01 or 0xD0 <= mk <= 0xD7:
+                out.append(bytes((0xFF, mk)))
+                continue
+            ln = int.from_bytes(data[i:i + 2], 'big')
+            if ln < 2 or i + ln > n:
+                raise ValueError
+            if mk == 0xDA:                                   # début des données de l'image : copiées telles quelles
+                out.append(b'\xff\xda' + data[i:])
+                break
+            seg = data[i:i + ln]
+            icc = mk == 0xE2 and seg[2:14] == b'ICC_PROFILE\0'
+            if not ((0xE1 <= mk <= 0xEF and mk != 0xEE and not icc) or mk == 0xFE):
+                out.append(bytes((0xFF, mk)) + seg)
+            i += ln
+        return b''.join(out)
+    if ext == 'webp':
+        body, i = [], 12
+        while i + 8 <= n:
+            cc, ln = data[i:i + 4], int.from_bytes(data[i + 4:i + 8], 'little')
+            end = i + 8 + ln + (ln & 1)
+            if i + 8 + ln > n:
+                raise ValueError
+            chunk = bytearray(data[i:min(end, n)])
+            if cc == b'VP8X' and ln >= 1:
+                chunk[8] &= ~0x0C & 0xFF                     # plus d'EXIF ni de XMP annoncés
+            if cc not in (b'EXIF', b'XMP '):
+                body.append(bytes(chunk))
+            i = end
+        b = b''.join(body)
+        return b'RIFF' + (4 + len(b)).to_bytes(4, 'little') + b'WEBP' + b
+    return data
 
 
 class Limiter:
@@ -449,19 +651,16 @@ class Limiter:
 # --------------------------------------------------------------------------
 
 class Index:
-    def __init__(self, root):
-        self.notes, self.files, self.all_lower, self.dirs = [], {}, {}, []
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = sorted((d for d in dirnames if not d.startswith('.') and d not in SKIP_DIRS), key=str.lower)
-            self.dirs.extend(Path(dirpath, d).relative_to(root).as_posix() for d in dirnames)
-            for fn in sorted(filenames, key=str.lower):
-                if fn.startswith('.'):
-                    continue
-                rel = Path(dirpath, fn).relative_to(root).as_posix()
-                self.files.setdefault(fn.lower(), []).append(rel)
-                self.all_lower[rel.lower()] = rel
-                if is_note(fn):
-                    self.notes.append(rel)
+    def __init__(self, store):
+        visible = lambda p: not any(x.startswith('.') for x in p.split('/'))     # .trash/ reste caché
+        self.notes, self.files, self.all_lower = [], {}, {}
+        self.dirs = sorted((d for d in store.dirs() if visible(d)), key=str.lower)
+        for rel in sorted((p for p in store.files() if visible(p)), key=str.lower):
+            fn = rel.rsplit('/', 1)[-1]
+            self.files.setdefault(fn.lower(), []).append(rel)
+            self.all_lower[rel.lower()] = rel
+            if is_note(fn):
+                self.notes.append(rel)
         self.noteset = set(self.notes)
         self.by_stem, self.by_path = {}, {}
         for rel in self.notes:
@@ -531,29 +730,31 @@ class Index:
 
 
 class Vault:
-    def __init__(self, root, base=''):
-        self.root = Path(root).resolve()
+    def __init__(self, store, base=''):
+        self.store = store
         self.base = base
-        self.name = self.root.name
+        self.name = store.name
         self.lock = threading.Lock()
+        self._cache = {}
+
+    def clear(self):
         self._cache = {}
 
     def url(self, rel):
         return self.base + '/note/' + urllib.parse.quote(rel)
 
     def index(self):
-        return Index(self.root)
+        return Index(self.store)
 
     def info(self, rel):
-        p = self.root / rel
-        try:
-            mt = p.stat().st_mtime_ns
-        except OSError:
+        f = self.store.stat(rel)
+        if not f:
             return None
+        mt = f['mt']
         c = self._cache.get(rel)
         if c and c['mtime'] == mt:
             return c
-        text = p.read_text(encoding='utf-8', errors='replace')
+        text = self.store.read(rel).decode('utf-8', 'replace')
         meta, body = split_front(text)
         wl, ml, tags = [], [], set(front_tags(meta))
         for i, seg in enumerate(split_code(body)):
@@ -1262,6 +1463,8 @@ a.tag:hover{background:var(--accent-bg);color:var(--accent);border-color:transpa
 .card{border-radius:10px;background:var(--bg);transition:border-color .15s}
 .card:hover{transform:none;border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
 .task-cb:checked{background:var(--accent);border-color:var(--accent)}
+#src.drop,#view.drop{background:var(--accent-bg);outline:2px dashed color-mix(in srgb,var(--accent) 50%,transparent);outline-offset:-8px;border-radius:10px}
+.md img{display:block;margin:1em 0;border-radius:8px;box-shadow:0 0 0 1px var(--border)}
 
 /* ---- petits écrans ---- */
 @media (max-width:1100px){
@@ -1295,14 +1498,17 @@ const ICON=n=>'<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentCol
 const escH=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const enc=p=>NP+p.split('/').map(encodeURIComponent).join('/');
 const dirOf=p=>p.includes('/')?p.slice(0,p.lastIndexOf('/')):'';
-const LS={get(k,d){try{const v=localStorage.getItem('mdv-'+k);return v===null?d:JSON.parse(v);}catch(e){return d;}},
-          set(k,v){try{localStorage.setItem('mdv-'+k,JSON.stringify(v));}catch(e){}}};
+/* noms de notes : sessionStorage (oublié à la fermeture) ; préférences d'affichage : localStorage */
+const ST=k=>(k.includes(':')||k==='flash')?sessionStorage:localStorage;
+const LS={get(k,d){try{const v=ST(k).getItem('mdv-'+k);return v===null?d:JSON.parse(v);}catch(e){return d;}},
+          set(k,v){try{ST(k).setItem('mdv-'+k,JSON.stringify(v));}catch(e){}}};
 const SK=k=>k+':'+B;
 const sc=$('#scroller');
 
 async function call(url,data,retry){
   const h={'X-CSRF':TOKEN};let opt={headers:h,credentials:'same-origin'};
-  if(data!==undefined){h['Content-Type']='application/json';opt={method:'POST',headers:h,credentials:'same-origin',body:JSON.stringify(data)};}
+  if(data instanceof Blob){h['Content-Type']=data.type||'application/octet-stream';opt={method:'POST',headers:h,credentials:'same-origin',body:data};}
+  else if(data!==undefined){h['Content-Type']='application/json';opt={method:'POST',headers:h,credentials:'same-origin',body:JSON.stringify(data)};}
   const r=await fetch(url,opt);let j={};try{j=await r.json();}catch(e){}
   if(r.status===401||(r.status===403&&j.code==='csrf')){
     if(!retry){try{const c=await fetch('/api/csrf',{credentials:'same-origin'});if(c.ok){TOKEN=(await c.json()).csrf;return call(url,data,true);}}catch(e){}}
@@ -1358,7 +1564,7 @@ function showHelp(){
     k('Nouvelle note','Alt+N')+k('Panneau de gauche','Ctrl+\\')+k('Changer de thème','Alt+T')+k('Cette aide','?')+'</table>'+
     '<h4>Édition</h4><table>'+k('Enregistrer (aussi automatique)','Ctrl+S')+k('Gras','Ctrl+B')+k('Italique','Ctrl+I')+
     k('Lien [[…]] avec autocomplétion','Ctrl+K')+k('Case à cocher sur la ligne','Ctrl+Entrée')+k('Surligner ==…==','Ctrl+Maj+H')+
-    k('Barrer ~~…~~','Ctrl+Maj+X')+k('Indenter / désindenter','Tab')+k('Désindenter','Maj+Tab')+'</table>'+
+    k('Barrer ~~…~~','Ctrl+Maj+X')+k('Coller une image','Ctrl+V')+k('Indenter / désindenter','Tab')+k('Désindenter','Maj+Tab')+'</table>'+
     '<p class="muted" style="margin-top:14px;font-size:13px">Tapez <kbd>[[</kbd> pour lier une note, avec autocomplétion. Survolez un lien pour voir un aperçu de la note.</p>'+
     '<div class="btns"><button class="btn primary" data-ok>Fermer</button></div></div>');
   const b=$('[data-ok]',m);b.focus();b.onclick=closeOverlay;
@@ -1614,7 +1820,7 @@ const M=$('#main'),NOTE=M.dataset.path||null;
 if(NOTE){
   pushRecent(NOTE);
   const view=$('#view'),art=$('#art'),ed=$('#editor'),ta=$('#src'),pv=$('#preview'),wrap=$('.edwrap'),
-        st=$('#status'),wc=$('#wc'),ps=$('#pos'),bPrev=$('#b-prev'),tt=$('#ntitle');
+        st=$('#status'),wc=$('#wc'),ps=$('#pos'),bPrev=$('#b-prev'),bImg=$('#b-img'),tt=$('#ntitle');
   const NAME=tt?tt.textContent.trim():NOTE,CHILD=M.dataset.child,KIDS=+(M.dataset.kids||0);
   const newChild=()=>newNote(CHILD,null,'Nouvelle sous-note de « '+NAME+' »');
   const bc=$('#b-child');if(bc)bc.onclick=newChild;
@@ -1658,7 +1864,7 @@ if(NOTE){
   /* modes */
   function setMode(edit){
     $('#m-read').classList.toggle('on',!edit);$('#m-edit').classList.toggle('on',edit);
-    document.body.classList.toggle('editing',edit);view.hidden=edit;ed.hidden=!edit;bPrev.hidden=!edit;
+    document.body.classList.toggle('editing',edit);view.hidden=edit;ed.hidden=!edit;bPrev.hidden=!edit;bImg.hidden=!edit;
   }
   function openEditor(){
     if(editing())return;
@@ -1830,6 +2036,35 @@ if(NOTE){
   ta.addEventListener('blur',()=>setTimeout(acHide,150));
   ta.addEventListener('scroll',()=>{acHide();if(pv.offsetParent!==null){const r=ta.scrollTop/Math.max(1,ta.scrollHeight-ta.clientHeight);pv.scrollTop=r*(pv.scrollHeight-pv.clientHeight);}},{passive:true});
 
+  /* images : coller, glisser-déposer, bouton */
+  const isImg=f=>/^image\/(png|jpeg|gif|webp)$/.test(f.type);
+  async function uploadImages(files){
+    const imgs=[...files].filter(isImg);
+    if(!imgs.length){toast('Formats acceptés : PNG, JPEG, GIF, WebP','err');return;}
+    if(!editing())openEditor();
+    for(const f of imgs){
+      if(f.size>MDV.maxUpload){toast('Image trop lourde : '+f.name,'err');continue;}
+      setStatus('Chiffrement de l\'image…');
+      try{const j=await call(B+'/api/upload?name='+encodeURIComponent(f.name||''),f);ta.focus();
+        const s=ta.selectionStart,before=ta.value.slice(0,s);
+        ins((before&&!before.endsWith('\n')?'\n':'')+j.embed+'\n');toast('Image ajoutée (métadonnées retirées)','ok',1800);}
+      catch(e){toast('Image refusée : '+e.message,'err',4000);setStatus('');}
+    }
+  }
+  const picker=document.createElement('input');Object.assign(picker,{type:'file',accept:'image/png,image/jpeg,image/gif,image/webp',multiple:true,hidden:true});
+  document.body.appendChild(picker);picker.onchange=()=>{if(picker.files.length)uploadImages(picker.files);picker.value='';};
+  const pickImage=()=>{if(!editing())openEditor();picker.click();};
+  bImg.onclick=pickImage;
+  ta.addEventListener('paste',e=>{const fs=e.clipboardData&&e.clipboardData.files;
+    if(fs&&fs.length&&[...fs].some(isImg)){e.preventDefault();uploadImages(fs);}});
+  const hasFiles=e=>e.dataTransfer&&[...e.dataTransfer.types].includes('Files');
+  [ta,view].forEach(el=>{
+    el.addEventListener('dragover',e=>{if(hasFiles(e)){e.preventDefault();el.classList.add('drop');}});
+    el.addEventListener('dragleave',()=>el.classList.remove('drop'));
+    el.addEventListener('drop',e=>{el.classList.remove('drop');if(!hasFiles(e))return;e.preventDefault();
+      if(el===view){openEditor();ta.setSelectionRange(ta.value.length,ta.value.length);}uploadImages(e.dataTransfer.files);});
+  });
+
   /* renommer / supprimer / menu */
   async function rename(v){
     if(dirty)await save();
@@ -1849,6 +2084,7 @@ if(NOTE){
     tt.addEventListener('paste',e=>{e.preventDefault();document.execCommand('insertText',false,(e.clipboardData.getData('text/plain')||'').replace(/\s+/g,' '));});
   }
   $('#b-more').onclick=e=>openMenu(e.currentTarget,[
+    {icon:'image',label:'Insérer une image…',act:pickImage},
     {icon:'fileplus',label:'Nouvelle sous-note',act:newChild},
     {icon:'pencil',label:'Renommer…',act:()=>ask('Renommer la note',NAME,'Renommer','Les [[liens]] des autres notes seront mis à jour.').then(v=>{if(v&&v!==NAME)rename(v);})},
     {icon:'link',label:'Copier le lien [[…]]',act:()=>copyText('[['+NAME+']]','Lien copié')},
@@ -1901,7 +2137,7 @@ PAGE = """<!doctype html>
   </div>
   <div class="side-foot"><button class="ib" id="b-theme"></button><button class="ib" id="b-help" title="Raccourcis (?)">{{I_HELP}}</button>
     <span class="sp"></span>
-    <form class="inline" method="post" action="/logout" id="f-lock"><input type="hidden" name="csrf" value="{{CSRF}}"><button class="ib" id="b-lock" title="Verrouiller la base">{{I_LOCK}}</button></form></div>
+    <form class="inline" method="post" action="/logout" id="f-lock"><input type="hidden" name="csrf" value="{{CSRF}}"><button class="ib" id="b-lock" title="Verrouiller la base (efface la clé de la mémoire)">{{I_LOCK}}</button></form></div>
   <div class="resizer" title="Glisser pour redimensionner"></div>
 </aside>
 <div id="center">
@@ -1997,8 +2233,9 @@ def page_csp(nonce):
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    base = None        # Base : mot de passe + sessions
-    vault = None       # Vault : notes de la base
+    store = None       # Store : stockage chiffré
+    vault = None       # Vault : notes (index, rendu, cache)
+    sessions = None    # Sessions : en mémoire uniquement
     limiter = None
     cfg = {'secure': False, 'proxy': False, 'hosts': set()}
     server_version = 'mdvault'
@@ -2032,6 +2269,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Referrer-Policy', 'same-origin')
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
         self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
+        self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
         self.send_header('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()')
         self.send_header('Content-Security-Policy', csp or "default-src 'none'; frame-ancestors 'none'")
         if self.cfg['secure']:
@@ -2082,30 +2320,27 @@ class Handler(BaseHTTPRequestHandler):
         return '__Host-' + n if self.cfg['secure'] else n
 
     def cookie(self, name, val, age):
-        return ('Set-Cookie', '%s=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=%d%s'
-                % (name, val, age, '; Secure' if self.cfg['secure'] else ''))
+        """age=None : cookie de session (effacé à la fermeture du navigateur)."""
+        return ('Set-Cookie', '%s=%s; Path=/; HttpOnly; SameSite=Strict%s%s'
+                % (name, val, '' if age is None else '; Max-Age=%d' % age, '; Secure' if self.cfg['secure'] else ''))
 
     def load_auth(self):
         self.skey = self.sess = None
         tok = self.cookies().get(self.cn())
         if tok:
-            self.skey, self.sess = self.base.session(tok)
+            self.skey, self.sess = self.sessions.get(tok)
+        if self.sess and not self.store.is_unlocked():
+            self.skey = self.sess = None
 
-    def safe(self, rel, note=False):
+    def clean(self, rel, note=False):
+        """Chemin relatif normalisé et sûr (sans .., sans élément caché), ou None."""
         if not isinstance(rel, str) or not rel or '\x00' in rel or len(rel) > 1024:
             return None
-        if any(part.startswith('.') for part in rel.replace('\\', '/').split('/') if part):
+        parts = [x for x in rel.replace('\\', '/').split('/') if x not in ('', '.')]
+        if not parts or any(x == '..' or x.startswith('.') or not x.strip() or len(x) > 255 for x in parts):
             return None
-        root = self.vault.root
-        p = (root / rel).resolve()
-        if p == root or root not in p.parents:
-            return None
-        if note and not is_note(p.name):
-            return None
-        return p
-
-    def rel_of(self, p):
-        return p.relative_to(self.vault.root).as_posix()
+        rel = '/'.join(parts)
+        return rel if not note or is_note(rel) else None
 
     def alert(self, code):
         m = MSGS.get(code)
@@ -2137,7 +2372,8 @@ class Handler(BaseHTTPRequestHandler):
         links = [('home', '/', 'home', 'Accueil'), ('search', '/search', 'search', 'Recherche')]
         nav = ''.join('<a href="%s"%s>%s%s</a>' % (esc(href), ' class="on"' if key == nav_on else '', icon(ic), lab)
                       for key, href, ic, lab in links)
-        mdv = {'csrf': self.sess['csrf'], 'base': v.base, 'icons': ICONS, 'notes': [[r, stem(r)] for r in idx.notes]}
+        mdv = {'csrf': self.sess['csrf'], 'base': v.base, 'icons': ICONS, 'notes': [[r, stem(r)] for r in idx.notes],
+               'maxUpload': MAX_UPLOAD}
         nonce = secrets.token_urlsafe(16)
         vals = {
             'TITLE': esc(title), 'CSS': CSS, 'PYG': PYG_CSS, 'JS': JS, 'HEADJS': HEAD_JS, 'NONCE': nonce,
@@ -2174,6 +2410,14 @@ class Handler(BaseHTTPRequestHandler):
             fn()
         except (BrokenPipeError, ConnectionResetError, TimeoutError, ssl.SSLError):
             pass
+        except Locked:
+            try:
+                if urllib.parse.urlsplit(self.path).path.startswith('/api/'):
+                    self.send_json({'error': 'base verrouillée', 'code': 'auth'}, 401)
+                else:
+                    self.redirect('/login')
+            except Exception:
+                pass
         except Exception:
             traceback.print_exc()
             try:
@@ -2226,7 +2470,7 @@ class Handler(BaseHTTPRequestHandler):
         pre = self.pre_token()
         name = esc(self.vault.name)
         body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">%s</h1>'
-                '<p class="auth-sub">Cette base est protégée. Saisissez son mot de passe.</p>%s%s'
+                '<p class="auth-sub">Base chiffrée. Saisissez son mot de passe pour la déverrouiller.</p>%s%s'
                 '<form method="post" action="/login"><input type="hidden" name="pre" value="%s">'
                 '<input type="hidden" name="next" value="%s">'
                 '<input type="text" name="username" value="%s" autocomplete="username" hidden>'
@@ -2277,36 +2521,30 @@ class Handler(BaseHTTPRequestHandler):
                     return line[:180]
         return ''
 
-    def send_file(self, p):
-        ctype = mimetypes.guess_type(p.name)[0] or 'application/octet-stream'
+    def send_file(self, rel):
+        data = self.vault.store.read(rel)
+        name = rel.rsplit('/', 1)[-1]
+        img = sniff_image(data)
+        ctype = img[1] if img else (mimetypes.guess_type(name)[0] or 'application/octet-stream')
         major = ctype.split('/')[0]
         if major == 'text':
             ctype = 'text/plain; charset=utf-8'      # jamais interprété comme HTML/JS
-        inline = major in ('image', 'audio', 'video', 'text') or ctype == 'application/pdf'
-        size = p.stat().st_size
-        self.send_response(200)
-        self.send_header('Content-Type', ctype)
-        self.send_header('Content-Length', str(size))
+        inline = img is not None or major in ('audio', 'video', 'text') or ctype == 'application/pdf'
         csp = "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'"
         if ctype != 'application/pdf':
             csp += '; sandbox'
-        self.security_headers(csp, 'SAMEORIGIN')
-        disp = 'inline' if inline else 'attachment'
-        self.send_header('Content-Disposition', "%s; filename*=UTF-8''%s" % (disp, urllib.parse.quote(p.name)))
-        self.end_headers()
-        if self.command != 'HEAD':
-            with open(p, 'rb') as f:
-                shutil.copyfileobj(f, self.wfile, 256 * 1024)
+        self.send(data, ctype, 200, [('Content-Disposition', "%s; filename*=UTF-8''%s"
+                                      % ('inline' if inline else 'attachment', urllib.parse.quote(name)))],
+                  csp=csp, frame='SAMEORIGIN')
 
     def note(self, rel):
         v = self.vault
-        p = self.safe(rel)
-        if p is None or not p.is_file():
+        shown, rel = rel, self.clean(rel)
+        if rel is None or not v.store.is_file(rel):
             return self.send_page('Introuvable', '<div class="content"><h1 class="page-title">Note introuvable</h1>'
-                                  '<p class="lead">%s</p></div>' % esc(rel), code=404)
-        rel = self.rel_of(p)
-        if not is_note(p.name):
-            return self.send_file(p)
+                                  '<p class="lead">%s</p></div>' % esc(shown), code=404)
+        if not is_note(rel):
+            return self.send_file(rel)
 
         idx = v.index()
         info = v.info(rel)
@@ -2323,10 +2561,11 @@ class Handler(BaseHTTPRequestHandler):
         actions = (
                    '<div class="seg"%s><button id="m-read" class="on" title="Lecture (Ctrl+E)">%s<span>Lecture</span></button>'
                    '<button id="m-edit" title="Édition (Ctrl+E)">%s<span>Édition</span></button></div>'
+                   '<button class="ib" id="b-img" title="Insérer une image (ou coller / glisser-déposer)" hidden>%s</button>'
                    '<button class="ib" id="b-prev" title="Aperçu côte à côte" hidden>%s</button>'
                    '<button class="ib" id="b-more" title="Plus d\'actions">%s</button>'
                    '<button class="ib" id="b-right" title="Panneau de droite">%s</button>'
-                   % ('', icon('eye'), icon('pencil'), icon('cols'), icon('dots'), icon('rside')))
+                   % ('', icon('eye'), icon('pencil'), icon('image'), icon('cols'), icon('dots'), icon('rside')))
         tags_meta = ''.join('<a class="tag" href="%s/search?q=%s">#%s</a>' % (v.base, urllib.parse.quote('#' + t), esc(t))
                             for t in sorted(front_tags(info['meta'])))
         fm = ('<details class="fm"><summary>Propriétés</summary><pre>%s</pre></details>'
@@ -2336,13 +2575,13 @@ class Handler(BaseHTTPRequestHandler):
             '<h1 class="title" id="ntitle"%s>%s</h1>'
             '<div class="meta"><span>Modifiée le %s</span><span id="words"></span>%s</div>%s'
             '<article class="md" id="art">%s</article>%s</div>'
-            '<div id="editor" hidden><div class="edwrap"><textarea id="src" spellcheck="true" lang="fr" '
+            '<div id="editor" hidden><div class="edwrap"><textarea id="src" spellcheck="false" autocomplete="off" lang="fr" '
             'placeholder="Commencez à écrire…  ([[ pour lier une note)">\n%s</textarea>'
             '<div id="preview" class="md"></div></div>'
             '<div class="edfoot"><span id="status" class="status">Sauvegarde automatique</span><span class="sp"></span>'
             '<span id="pos"></span><span id="wc"></span><span><kbd>?</kbd> raccourcis</span></div></div>'
         ) % (' contenteditable="plaintext-only" spellcheck="false" title="Cliquer pour renommer"',
-             esc(title), fmt_time(info['mtime']), tags_meta, fm, body_html, self.subpages(idx, rel), esc(read_raw(p)))
+             esc(title), fmt_time(info['mtime']), tags_meta, fm, body_html, self.subpages(idx, rel), esc(info['text']))
 
         back = sorted((n for n in idx.notes if n != rel and rel in idx.out_links(v, n)), key=str.lower)
         outl = sorted(idx.out_links(v, rel), key=str.lower)
@@ -2394,11 +2633,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_page('Recherche' + (' : ' + q if q else ''), main, idx=idx, nav_on='search')
 
     def api_peek(self, rel):
-        p = self.safe(rel, note=True)
-        if p is None or not p.is_file():
+        rel = self.clean(rel, note=True)
+        info = self.vault.info(rel) if rel else None
+        if not info:
             return self.send_json({'error': 'note introuvable'}, 404)
-        rel = self.rel_of(p)
-        info = self.vault.info(rel)
         self.send_json({'title': stem(rel), 'html': render(self.vault, self.vault.index(), rel, info['body'],
                                                            interactive=False)})
 
@@ -2413,13 +2651,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'error': 'hôte refusé'}, 403)
         if not self.origin_ok():
             return self.send_json({'error': 'origine refusée'}, 403)
-        path = urllib.parse.urlsplit(self.path).path
+        u = urllib.parse.urlsplit(self.path)
+        path = u.path
         try:
             n = int(self.headers.get('Content-Length') or 0)
         except ValueError:
             n = -1
         is_api = path.startswith('/api/')
-        if n < 0 or n > (MAX_BODY if is_api else MAX_FORM):
+        if n < 0 or n > (MAX_UPLOAD if path == '/api/upload' else MAX_BODY if is_api else MAX_FORM):
             self.close_connection = True
             return self.send_json({'error': 'requête trop volumineuse ou invalide'}, 413)
         raw = self.rfile.read(n) if n else b''
@@ -2444,6 +2683,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'error': 'base verrouillée', 'code': 'auth'}, 401)
         if not ct_eq(self.headers.get('X-CSRF'), self.sess['csrf']):
             return self.send_json({'error': 'jeton CSRF invalide', 'code': 'csrf'}, 403)
+        if path == '/api/upload':
+            if not ctype.startswith('image/'):
+                return self.send_json({'error': 'type de contenu refusé'}, 415)
+            with self.vault.lock:
+                return self.api_upload(raw, u.query)
         if ctype != 'application/json':
             return self.send_json({'error': 'type de contenu refusé'}, 415)
         try:
@@ -2479,18 +2723,19 @@ class Handler(BaseHTTPRequestHandler):
             self.log_auth('tentative bloquée')
             return self.login_page(nxt=nxt, code=429,
                                    err='Trop de tentatives : réessayez dans %d min.' % max(1, (wait + 59) // 60))
-        if not self.base.check(pw):
+        if not self.store.unlock(pw):
             self.limiter.fail(ip)
             self.log_auth('mot de passe incorrect')
+            time.sleep(0.5)
             return self.login_page(nxt=nxt, code=401, err='Mot de passe incorrect.')
         self.limiter.ok(ip)
         self.log_auth('base déverrouillée')
-        tok = self.base.new_session()
-        self.redirect(nxt or '/', [self.cookie(self.cn(), tok, SESSION_MAX), self.cookie(self.cn(pre=True), '', 0)])
+        tok = self.sessions.new()
+        self.redirect(nxt or '/', [self.cookie(self.cn(), tok, None), self.cookie(self.cn(pre=True), '', 0)])
 
     def do_logout(self):
-        self.base.drop_session(self.skey)
-        self.log_auth('base verrouillée')
+        self.log_auth('verrouillage demandé')
+        self.sessions.clear()                    # ferme toutes les sessions et efface la clé
         self.redirect('/login?m=out', [self.cookie(self.cn(), '', 0), ('Clear-Site-Data', '"cache", "storage"')])
 
     # --- API d'écriture ---
@@ -2502,90 +2747,81 @@ class Handler(BaseHTTPRequestHandler):
             return None, 'nom vide ou trop long'
         if not is_note(name):
             name += '.md'
-        rel = posixpath.normpath(name if ('/' in name or not base) else posixpath.join(base, name))
-        if rel.startswith('..') or any(part.startswith('.') for part in rel.split('/')):
-            return None, 'nom invalide'
-        p = self.safe(rel, note=True)
-        return (p, None) if p else (None, 'chemin invalide')
+        rel = self.clean(name if ('/' in name or not base) else posixpath.join(base, name), note=True)
+        return (rel, None) if rel else (None, 'nom invalide')
 
     def api_save(self, d):
-        p = self.safe(d.get('path'), note=True)
-        content = d.get('content', '')
-        if p is None or not isinstance(content, str):
+        st = self.vault.store
+        rel, content = self.clean(d.get('path'), note=True), d.get('content', '')
+        if rel is None or not isinstance(content, str):
             return self.send_json({'error': 'chemin invalide'}, 400)
-        if p.exists():
-            cur = str(p.stat().st_mtime_ns)
+        f = st.stat(rel)
+        if f:
+            cur = str(f['mt'])
             if d.get('mtime') and str(d['mtime']) != cur and not d.get('force'):
-                return self.send_json({'error': 'fichier modifié ailleurs', 'mtime': cur}, 409)
-            with open(p, 'rb') as f:
-                if b'\r\n' in f.read(65536):
-                    content = content.replace('\r\n', '\n').replace('\n', '\r\n')
-        if not p.exists():
-            p.parent.mkdir(parents=True, exist_ok=True)
-        atomic_write(p, content)
-        self.send_json({'ok': True, 'mtime': str(p.stat().st_mtime_ns)})
+                return self.send_json({'error': 'note modifiée ailleurs', 'mtime': cur}, 409)
+            if b'\r\n' in st.read(rel)[:65536]:
+                content = content.replace('\r\n', '\n').replace('\n', '\r\n')
+        elif st.is_dir(rel):
+            return self.send_json({'error': 'un dossier porte ce nom'}, 409)
+        self.send_json({'ok': True, 'mtime': str(st.write(rel, content.encode('utf-8')))})
 
     def api_preview(self, d):
-        p = self.safe(d.get('path'), note=True)
-        content = d.get('content', '')
-        if p is None or not isinstance(content, str):
+        rel, content = self.clean(d.get('path'), note=True), d.get('content', '')
+        if rel is None or not isinstance(content, str):
             return self.send_json({'error': 'chemin invalide'}, 400)
-        rel = self.rel_of(p)
         _, body = split_front(content)
         self.send_json({'html': render(self.vault, self.vault.index(), rel, body, interactive=bool(d.get('interactive')))})
 
     def api_new(self, d):
-        p, err = self._target(d.get('name'), d.get('base') or '')
+        st = self.vault.store
+        rel, err = self._target(d.get('name'), d.get('base') or '')
         if err:
             return self.send_json({'error': err}, 400)
-        if not p.exists():
-            p.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write(p, '')
-        self.send_json({'url': self.vault.url(self.rel_of(p)) + '?edit=1'})
+        if st.is_dir(rel):
+            return self.send_json({'error': 'un dossier porte ce nom'}, 409)
+        if not st.is_file(rel):
+            st.write(rel, b'')
+        self.send_json({'url': self.vault.url(rel) + '?edit=1'})
 
     def api_rename(self, d):
-        src = self.safe(d.get('path'), note=True)
-        if src is None or not src.is_file():
+        st = self.vault.store
+        src = self.clean(d.get('path'), note=True)
+        if src is None or not st.is_file(src):
             return self.send_json({'error': 'note introuvable'}, 404)
-        old_rel = self.rel_of(src)
-        dst, err = self._target(d.get('name'), posixpath.dirname(old_rel))
+        dst, err = self._target(d.get('name'), posixpath.dirname(src))
         if err:
             return self.send_json({'error': err}, 400)
-        if dst.exists() and dst != src:
+        if dst != src and st.exists(dst):
             return self.send_json({'error': 'une note porte déjà ce nom'}, 409)
-        new_rel = self.rel_of(dst)
         idx = self.vault.index()
-        old_dir, new_dir = src.parent / stem(src.name), dst.parent / stem(dst.name)
-        move_dir = old_dir.is_dir() and not old_dir.is_symlink() and old_dir != new_dir
-        if move_dir and new_dir.exists():
+        old_dir, new_dir = child_dir(src), child_dir(dst)
+        move_dir = st.is_dir(old_dir) and old_dir != new_dir
+        if move_dir and st.exists(new_dir):
             return self.send_json({'error': 'un dossier porte déjà ce nom'}, 409)
-        mapping = {old_rel: new_rel}             # la note et, si besoin, toutes ses sous-notes
+        mapping = {src: dst}                     # la note et, si besoin, toutes ses sous-notes
         if move_dir:
-            oc, nc = child_dir(old_rel), child_dir(new_rel)
-            for c in descendants(idx.notes, old_rel):
-                mapping[c] = nc + c[len(oc):]
-        new_stem = stem(new_rel)
-        if len(idx.by_stem.get(new_stem.lower(), [])) > (1 if stem(old_rel).lower() == new_stem.lower() else 0):
-            new_target = new_rel.rsplit('.', 1)[0]   # nom ambigu : on écrit le chemin
+            for c in descendants(idx.notes, src):
+                mapping[c] = new_dir + c[len(old_dir):]
+        new_stem = stem(dst)
+        if len(idx.by_stem.get(new_stem.lower(), [])) > (1 if stem(src).lower() == new_stem.lower() else 0):
+            new_target = dst.rsplit('.', 1)[0]   # nom ambigu : on écrit le chemin
         else:
             new_target = new_stem
-        updated = self._relink(idx, mapping, old_rel, new_target)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        os.rename(src, dst)
+        updated = self._relink(idx, mapping, src, new_target)
+        st.move(src, dst)
         if move_dir:
-            new_dir.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(old_dir, new_dir)
-        self.send_json({'url': self.vault.url(new_rel), 'updated': updated})
+            st.move(old_dir, new_dir)
+        self.send_json({'url': self.vault.url(dst), 'updated': updated})
 
     def _relink(self, idx, mapping, main=None, main_target=None):
         """Réécrit les [[liens]] vers des notes déplacées (mapping ancien -> nouveau chemin)."""
-        updated = 0
+        st, updated = self.vault.store, 0
         for n in idx.notes:
             info = self.vault.info(n)
             if not info or not any(idx.resolve_note(t, n) in mapping for t in info['wl']):
                 continue
-            np_ = self.vault.root / n
-            raw = read_raw(np_)
+            raw = st.read(n).decode('utf-8', 'replace')
 
             def fix(m):
                 r = idx.resolve_note(m.group(2), n) if m.group(2).strip() else None
@@ -2602,84 +2838,73 @@ class Handler(BaseHTTPRequestHandler):
                 parts[i] = WIKILINK.sub(fix, parts[i])
             new_raw = ''.join(parts)
             if new_raw != raw:
-                atomic_write(np_, new_raw)
+                st.write(n, new_raw.encode('utf-8'))
                 updated += 1
         return updated
 
-    def _dir(self, rel):
-        p = self.safe(rel)
-        return p if p is not None and p.is_dir() and not p.is_symlink() else None
-
-    def _to_trash(self, p):
-        trash = self.vault.root / '.trash'
-        trash.mkdir(exist_ok=True)
-        dest, k = trash / p.name, 1
-        while dest.exists():
-            dest = trash / ('%s (%d)%s' % (p.stem, k, p.suffix) if p.is_file() else '%s (%d)' % (p.name, k))
-            k += 1
-        shutil.move(str(p), str(dest))
-
     def api_mkdir(self, d):
+        st = self.vault.store
         name = d.get('name') if isinstance(d.get('name'), str) else ''
         base = d.get('base') if isinstance(d.get('base'), str) else ''
         name = name.strip().replace('\\', '/').strip('/')
-        if not name or '\x00' in name or len(name) > 512:
+        if not name or len(name) > 512:
             return self.send_json({'error': 'nom vide ou trop long'}, 400)
-        rel = posixpath.normpath(posixpath.join(base, name) if base else name)
-        if rel.startswith('..') or any(x.startswith('.') or not x.strip() for x in rel.split('/')):
+        rel = self.clean(posixpath.join(base, name) if base else name)
+        if rel is None:
             return self.send_json({'error': 'nom invalide'}, 400)
-        p = self.safe(rel)
-        if p is None:
-            return self.send_json({'error': 'chemin invalide'}, 400)
-        if p.exists():
+        if st.exists(rel):
             return self.send_json({'error': 'ce nom existe déjà'}, 409)
-        p.mkdir(parents=True)
+        st.mkdir(rel)
         parts = rel.split('/')
         self.send_json({'path': rel, 'open': ['/'.join(parts[:i]) for i in range(1, len(parts) + 1)]})
 
     def api_rendir(self, d):
-        src = self._dir(d.get('path'))
-        name = d.get('name') if isinstance(d.get('name'), str) else ''
-        name = name.strip()
-        if src is None:
+        st = self.vault.store
+        src = self.clean(d.get('path'))
+        name = d.get('name').strip() if isinstance(d.get('name'), str) else ''
+        if src is None or not st.is_dir(src):
             return self.send_json({'error': 'dossier introuvable'}, 404)
-        if not name or '/' in name or '\\' in name or name.startswith('.') or '\x00' in name or len(name) > 255:
+        if not name or '/' in name or '\\' in name or len(name) > 255:
             return self.send_json({'error': 'nom invalide'}, 400)
-        dst = src.parent / name
-        if dst.exists():
+        dst = self.clean(posixpath.join(posixpath.dirname(src), name))
+        if dst is None:
+            return self.send_json({'error': 'nom invalide'}, 400)
+        if st.exists(dst):
             return self.send_json({'error': 'ce nom existe déjà'}, 409)
-        old, new = self.rel_of(src), self.rel_of(dst)
         idx = self.vault.index()
-        mapping = {n: new + n[len(old):] for n in idx.notes if n.startswith(old + '/')}
+        mapping = {n: dst + n[len(src):] for n in idx.notes if n.startswith(src + '/')}
         updated = self._relink(idx, mapping)
-        os.rename(src, dst)
-        self.send_json({'path': new, 'updated': updated})
+        st.move(src, dst)
+        self.send_json({'path': dst, 'updated': updated})
 
     def api_rmdir(self, d):
-        p = self._dir(d.get('path'))
-        if p is None:
+        st = self.vault.store
+        src = self.clean(d.get('path'))
+        if src is None or not st.is_dir(src):
             return self.send_json({'error': 'dossier introuvable'}, 404)
-        self._to_trash(p)
+        st.trash(src)
         self.send_json({'ok': True})
 
     def api_delete(self, d):
-        p = self.safe(d.get('path'), note=True)
-        if p is None or not p.is_file():
+        st = self.vault.store
+        rel = self.clean(d.get('path'), note=True)
+        if rel is None or not st.is_file(rel):
             return self.send_json({'error': 'note introuvable'}, 404)
-        kids = p.parent / stem(p.name)
-        self._to_trash(p)
-        if kids.is_dir() and not kids.is_symlink():          # les sous-notes suivent leur parente
-            self._to_trash(kids)
+        kids = child_dir(rel)
+        st.trash(rel)
+        if st.is_dir(kids):                     # les sous-notes suivent leur parente
+            st.trash(kids)
         self.send_json({'url': '/'})
 
     def api_toggle(self, d):
-        p = self.safe(d.get('path'), note=True)
-        if p is None or not p.is_file():
+        st = self.vault.store
+        rel = self.clean(d.get('path'), note=True)
+        f = st.stat(rel) if rel else None
+        if not f:
             return self.send_json({'error': 'note introuvable'}, 404)
-        cur = str(p.stat().st_mtime_ns)
-        if d.get('mtime') and str(d['mtime']) != cur:
-            return self.send_json({'error': 'fichier modifié ailleurs, rechargez la page'}, 409)
-        raw = read_raw(p)
+        if d.get('mtime') and str(d['mtime']) != str(f['mt']):
+            return self.send_json({'error': 'note modifiée ailleurs, rechargez la page'}, 409)
+        raw = st.read(rel).decode('utf-8', 'replace')
         m = FRONT.match(raw)
         head, body = (raw[:m.end()], raw[m.end():]) if m else ('', raw)
         try:
@@ -2701,8 +2926,33 @@ class Handler(BaseHTTPRequestHandler):
         if not done[0]:
             return self.send_json({'error': 'case introuvable'}, 400)
         new_raw = head + ''.join(parts)
-        atomic_write(p, new_raw)
-        self.send_json({'ok': True, 'mtime': str(p.stat().st_mtime_ns), 'content': new_raw.replace('\r\n', '\n')})
+        mt = st.write(rel, new_raw.encode('utf-8'))
+        self.send_json({'ok': True, 'mtime': str(mt), 'content': new_raw.replace('\r\n', '\n')})
+
+    def api_upload(self, raw, query):
+        st = self.vault.store
+        kind = sniff_image(raw)
+        if not kind:
+            return self.send_json({'error': 'format non pris en charge (PNG, JPEG, GIF ou WebP)'}, 415)
+        ext = kind[0]
+        try:
+            raw = strip_metadata(raw, ext)
+        except (ValueError, IndexError):
+            return self.send_json({'error': 'image invalide ou endommagée'}, 400)
+        name = (urllib.parse.parse_qs(query).get('name') or [''])[0]
+        name = name.replace('\\', '/').rsplit('/', 1)[-1]
+        name = name.rsplit('.', 1)[0] if '.' in name else name
+        name = re.sub(r'[^\w .()\-]+', '', name).strip(' .-')[:80] or time.strftime('Image %Y-%m-%d %H-%M-%S')
+        fname = '%s.%s' % (name, ext)
+        k = 2
+        while st.exists(ATTACH_DIR + '/' + fname):
+            fname = '%s (%d).%s' % (name, k, ext)
+            k += 1
+        rel = ATTACH_DIR + '/' + fname
+        st.write(rel, raw)
+        unique = len(self.vault.index().files.get(fname.lower(), [])) <= 1
+        self.log_auth('image ajoutée (%d octets)' % len(raw))
+        self.send_json({'path': rel, 'embed': '![[%s]]' % (fname if unique else rel)})
 
 
 # --------------------------------------------------------------------------
@@ -2723,31 +2973,93 @@ def ask_password(name):
     sys.exit('Abandon.')
 
 
+def import_dir(store, src):
+    """Chiffre dans la base le contenu d'un dossier en clair (les originaux ne sont pas modifiés)."""
+    src, n = Path(src).expanduser().resolve(), 0
+    if not src.is_dir():
+        sys.exit('Erreur : « %s » n\'est pas un dossier.' % src)
+    for dp, dn, fn in os.walk(src):
+        dn[:] = sorted(d for d in dn if not d.startswith('.') and d not in SKIP_DIRS)
+        rel_dir = Path(dp).relative_to(src).as_posix()
+        if rel_dir != '.':
+            store.mkdir(rel_dir)
+        for f in sorted(fn):
+            p = Path(dp, f)
+            if f.startswith('.') or p.is_symlink() or not p.is_file() or p.stat().st_size > 50 * 1024 * 1024:
+                continue
+            store.write(p.relative_to(src).as_posix(), p.read_bytes())
+            n += 1
+    return n
+
+
+def export_dir(store, dest):
+    """Déchiffre toute la base dans un dossier (vide ou inexistant)."""
+    dest = Path(dest).expanduser().resolve()
+    if dest.exists() and (not dest.is_dir() or any(dest.iterdir())):
+        sys.exit('Erreur : « %s » doit être un dossier vide ou inexistant.' % dest)
+    dest.mkdir(mode=0o700, parents=True, exist_ok=True)
+    visible = lambda p: not any(x.startswith('.') for x in p.split('/'))
+    for d in sorted(store.dirs()):
+        if visible(d):
+            (dest / d).mkdir(mode=0o700, parents=True, exist_ok=True)
+    n = 0
+    for rel in sorted(store.files()):
+        if visible(rel):
+            (dest / rel).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _write_blob(dest / rel, store.read(rel))
+            n += 1
+    return n
+
+
 def main():
-    ap = argparse.ArgumentParser(description='Base de notes Markdown protégée par mot de passe, dans le navigateur.')
+    ap = argparse.ArgumentParser(description='Base de notes Markdown chiffrée, protégée par mot de passe, dans le navigateur.')
     ap.add_argument('dossier', help='dossier de la base (créé s\'il n\'existe pas)')
     ap.add_argument('-p', '--port', type=int, default=8765, help='port (défaut : 8765)')
     ap.add_argument('--host', default='127.0.0.1', help='adresse d\'écoute (défaut : 127.0.0.1)')
     ap.add_argument('--no-browser', action='store_true', help='ne pas ouvrir le navigateur')
+    ap.add_argument('--lock-after', type=int, default=30, metavar='MIN',
+                    help='verrouillage automatique après MIN minutes d\'inactivité (défaut : 30)')
     ap.add_argument('--cert', help='certificat TLS (PEM) pour servir en HTTPS')
     ap.add_argument('--key', help='clé privée TLS (PEM)')
     ap.add_argument('--proxy', action='store_true',
                     help='derrière un reverse proxy HTTPS local : cookies Secure, IP lue dans X-Forwarded-For')
     ap.add_argument('--allow-host', action='append', default=[], metavar='NOM',
                     help='nom d\'hôte accepté dans l\'en-tête Host (répétable)')
+    ap.add_argument('--import', dest='imp', metavar='SOURCE', help='chiffrer dans la base les notes d\'un dossier en clair')
+    ap.add_argument('--export', metavar='CIBLE', help='déchiffrer toute la base dans un dossier (en clair !)')
     args = ap.parse_args()
 
+    if AESGCM is None:
+        sys.exit('mdvault a besoin du module « cryptography » (AES-256-GCM) :\n'
+                 '    sudo apt install python3-cryptography     ou     pip install cryptography')
     os.umask(0o077)
-    root = Path(args.dossier).expanduser()
+    store = Store(args.dossier)
+    root = store.root
     if root.exists() and not root.is_dir():
         sys.exit('Erreur : « %s » n\'est pas un dossier.' % root)
-    base = Base(root)
-    if not base.initialized():
+    if not store.initialized():
+        if root.exists() and any(root.iterdir()):
+            sys.exit('Erreur : « %s » n\'est pas vide.\nCréez la base dans un nouveau dossier, puis importez vos notes :\n'
+                     '    python3 %s NOUVEAU_DOSSIER --import %s' % (root, sys.argv[0], root))
         if not sys.stdin.isatty():
             sys.exit('Nouvelle base : lancez mdvault dans un terminal pour choisir son mot de passe.')
-        print('Nouvelle base « %s » (%s).' % (base.root.name, base.root))
-        base.init(ask_password(base.root.name))
-        print('Base créée et protégée.')
+        print('Nouvelle base chiffrée « %s » (%s).' % (store.name, root))
+        print('⚠  Sans le mot de passe, le contenu est irrécupérable : conservez-le précieusement.')
+        store.create(ask_password(store.name))
+        print('Base créée.')
+    if args.imp or args.export:
+        if not store.is_unlocked() and not store.unlock(getpass.getpass('Mot de passe de la base « %s » : ' % store.name)):
+            sys.exit('Mot de passe incorrect.')
+        if args.imp:
+            n = import_dir(store, args.imp)
+            print('%d fichier(s) chiffré(s) dans la base. Les originaux en clair n\'ont pas été modifiés :\n'
+                  'supprimez-les de façon sûre si nécessaire.' % n)
+        if args.export:
+            n = export_dir(store, args.export)
+            print('%d fichier(s) exporté(s) EN CLAIR dans %s.' % (n, Path(args.export).expanduser()))
+        store.lock_now()
+        return
+    store.lock_now()            # la clé ne sera chargée qu'au déverrouillage depuis le navigateur
     if bool(args.cert) != bool(args.key):
         sys.exit('Erreur : --cert et --key vont ensemble.')
 
@@ -2755,10 +3067,22 @@ def main():
     hosts = {h.strip().lower() for h in args.allow_host if h.strip()}
     if local:
         hosts |= {'127.0.0.1', 'localhost', '[::1]'}
-    Handler.base = base
-    Handler.vault = Vault(base.root)
-    Handler.limiter = Limiter()
+    vault = Vault(store)
+
+    def lock_all():
+        if store.is_unlocked():
+            store.lock_now()
+            vault.clear()
+            sys.stderr.write('%s [auth] base verrouillée (clé effacée de la mémoire)\n' % time.strftime('%Y-%m-%d %H:%M:%S'))
+    sessions = Sessions(max(1, args.lock_after) * 60, lock_all)
+    Handler.store, Handler.vault, Handler.sessions, Handler.limiter = store, vault, sessions, Limiter()
     Handler.cfg = {'secure': bool(args.cert) or args.proxy, 'proxy': args.proxy, 'hosts': hosts}
+
+    def sweeper():
+        while True:
+            time.sleep(20)
+            sessions.sweep()
+    threading.Thread(target=sweeper, daemon=True).start()
 
     server = None
     for port in range(args.port, args.port + 20):
@@ -2778,8 +3102,8 @@ def main():
 
     shown = 'localhost' if args.host in ('127.0.0.1', '0.0.0.0', '::') else args.host
     url = '%s://%s:%d/' % ('https' if args.cert else 'http', shown, server.server_address[1])
-    print('📚 mdvault — base « %s » : %s' % (base.root.name, base.root))
-    print('   %s   (Ctrl+C pour quitter)' % url)
+    print('🔒 mdvault — base chiffrée « %s » : %s' % (store.name, root))
+    print('   %s   (Ctrl+C pour quitter · verrouillage après %d min d\'inactivité)' % (url, args.lock_after))
     if _markdown is None:
         print('   (rendu intégré ; pour un rendu plus complet : sudo apt install python3-markdown python3-pygments)')
     if not local and not args.cert and not args.proxy:
@@ -2792,8 +3116,8 @@ def main():
     except KeyboardInterrupt:
         print('\nAu revoir.')
     finally:
+        lock_all()
         server.server_close()
-
 
 if __name__ == '__main__':
     main()
