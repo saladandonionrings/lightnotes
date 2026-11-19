@@ -1,35 +1,28 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-mdvault — notes Markdown façon Obsidian, multi-utilisateur, dans le navigateur.
+mdvault — bases de notes Markdown protégées par mot de passe, façon Trilium.
 Un seul fichier, aucune dépendance obligatoire.
 
-Chaque utilisateur possède ses propres « espaces » (dossiers de notes privés,
-isolés les uns des autres). Un espace entier ou une seule note peut être
-partagé avec un autre utilisateur, en lecture seule ou en lecture et écriture
-(page « Partages ») ; sans partage, personne d'autre n'y a accès.
+Une « base » est un dossier de notes (par exemple une par mission), protégé
+par son propre mot de passe. Au premier lancement sur un dossier, mdvault
+demande de choisir ce mot de passe.
 
 Utilisation :
-    python3 mdvault.py [DONNEES] [-p PORT] [--host HOTE] [--no-browser]
-    python3 mdvault.py [DONNEES] --add-user NOM      créer un utilisateur
-    python3 mdvault.py [DONNEES] --passwd NOM        changer un mot de passe
-    python3 mdvault.py [DONNEES] --del-user NOM      supprimer un utilisateur
-    python3 mdvault.py [DONNEES] --list-users        lister les utilisateurs
+    python3 mdvault.py DOSSIER [-p PORT] [--host HOTE] [--no-browser]
 
-    DONNEES : dossier des données (défaut : ./mdvault-data)
-        users.json              comptes (mots de passe hachés avec scrypt)
-        sessions.json           sessions actives (jetons hachés)
-        shares.json             partages entre utilisateurs
-        spaces/<id>/<espace>/   notes de chaque utilisateur
+    Exemple : python3 mdvault.py ~/missions/client-acme
+
+    Le dossier contient vos notes (.md) et un sous-dossier caché .mdvault/
+    (empreinte scrypt du mot de passe et sessions, lisibles par vous seul).
 
 Exposition sur un réseau : utilisez TLS (--cert/--key) ou un reverse proxy
-HTTPS (--proxy). --signup ouvre l'inscription publique (fermée par défaut).
+HTTPS (--proxy).
 
 Raccourcis principaux (touche « ? » pour la liste complète) :
     Ctrl+K / Ctrl+O   palette : ouvrir, créer, rechercher
     Ctrl+E            basculer lecture / édition
     Ctrl+S            enregistrer (la sauvegarde est aussi automatique)
-    Ctrl+\\            afficher / masquer le panneau de gauche
     Alt+N             nouvelle note
     [[                lien avec autocomplétion
 
@@ -97,11 +90,7 @@ SESSION_IDLE = 12 * 3600          # inactivité maximale d'une session
 SESSION_MAX = 7 * 24 * 3600       # durée de vie absolue d'une session
 MAX_BODY = 5 * 1024 * 1024        # taille maximale d'une note envoyée
 MAX_FORM = 16 * 1024              # taille maximale d'un formulaire
-MAX_SPACES = 20                   # espaces par utilisateur
-MAX_SHARES = 200                  # partages créés par utilisateur
 PW_MIN, PW_MAX = 10, 1024
-USER_RE = re.compile(r'^[a-z0-9][a-z0-9_.-]{2,31}$')
-SPACE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,39}$')
 SCRYPT_N, SCRYPT_R, SCRYPT_P = 2 ** 15, 8, 1
 HASH_SEM = threading.BoundedSemaphore(2)   # limite la mémoire consommée par scrypt
 COMMON_PW = {'motdepasse', 'password', 'password123', '1234567890', '12345678910', 'azertyuiop',
@@ -141,11 +130,9 @@ ICONS = {
     'type': '<path d="M4 7V5h16v2M9 19h6M12 5v14"/>',
     'link': '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
     'hash': '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
-    'user': '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
-    'logout': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
-    'spaces': '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
-    'share': '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
     'x': '<path d="M18 6 6 18M6 6l12 12"/>',
+    'folder': '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/>',
+    'folderplus': '<path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5z"/><path d="M12 10.5v5M9.5 13h5"/>',
     'logo': '<path d="M5 19V6.5l7 6.5 7-6.5V19"/>',
     'lock': '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
 }
@@ -158,21 +145,6 @@ def icon(name, cls='i'):
 
 def esc(s):
     return html.escape(str(s), quote=True)
-
-
-def hue(s):
-    h = 0
-    for c in str(s):
-        h = (h * 31 + ord(c)) % 360
-    return h
-
-
-def sp_ico(name, big=False):
-    return '<span class="sp-ico%s" style="--h:%d">%s</span>' % (' big' if big else '', hue(name), esc(name[:1].upper()))
-
-
-def avatar(name):
-    return '<span class="av" style="--h:%d">%s</span>' % (hue(name), esc(name[:1].upper()))
 
 
 LOGO = '<span class="logo">%s</span>' % icon('logo')
@@ -188,7 +160,7 @@ def slugify(value, sep='-'):
 # Identifiants utilisés par l'interface : un titre de note ne doit pas pouvoir les masquer.
 RESERVED_IDS = {'app', 'side', 'center', 'top', 'main', 'scroller', 'right', 'tree', 'view', 'ntitle', 'words',
                 'art', 'editor', 'src', 'preview', 'status', 'pos', 'wc', 'outline', 'outline-n', 'toasts', 'ov',
-                'ac', 'peek', 'b-new', 'b-collapse', 'b-space', 'b-child', 'b-switch', 'b-theme', 'b-help', 'b-left', 'b-prev', 'b-more',
+                'ac', 'peek', 'b-new', 'b-collapse', 'b-space', 'b-child', 'b-folder', 'b-lock', 'b-switch', 'b-theme', 'b-help', 'b-left', 'b-prev', 'b-more',
                 'b-right', 'm-read', 'm-edit', 'q-new', 'q-search', 'mdv'}
 
 
@@ -254,6 +226,7 @@ def plain_snippet(body, n=150):
     s = WIKILINK.sub(lambda m: m.group(4) or m.group(2), body)
     s = re.sub(r'```.*?```', ' ', s, flags=re.S)
     s = re.sub(r'!\[[^\]]*\]\([^)]*\)', ' ', s)
+    s = re.sub(r'\[![\w-]+\][+-]?', ' ', s)
     s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', s)
     s = re.sub(r'^\s*#{1,6}\s.*$', ' ', s, count=1, flags=re.M)
     s = re.sub(r'[#>*_`|=~\[\]]+|^\s*[-+]\s', ' ', s, flags=re.M)
@@ -353,178 +326,45 @@ def password_problem(pw, name=''):
 
 
 # --------------------------------------------------------------------------
-# Comptes, sessions, espaces
+# Base : mot de passe et sessions
 # --------------------------------------------------------------------------
 
 def _sha(tok):
     return hashlib.sha256(tok.encode('utf-8')).hexdigest()
 
 
-class Store:
-    def __init__(self, data, quota=0):
-        self.data = Path(data).expanduser().resolve()
-        self.data.mkdir(parents=True, exist_ok=True)
+class Base:
+    """Une base = un dossier de notes + .mdvault/ (empreinte du mot de passe, sessions)."""
+
+    def __init__(self, root):
+        self.root = Path(root).expanduser().resolve()
+        self.meta = self.root / '.mdvault'
+        self.afile = self.meta / 'auth.json'
+        self.sfile = self.meta / 'sessions.json'
+        self.lock = threading.RLock()
+        self._sess = {}
+        self._hash = None
+        if self.initialized():
+            with open(self.afile, encoding='utf-8') as f:
+                self._hash = json.load(f)['hash']
+            self._load_sessions()
+
+    def initialized(self):
+        return self.afile.is_file()
+
+    def init(self, pw):
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.meta.mkdir(mode=0o700, exist_ok=True)
         try:
-            os.chmod(self.data, 0o700)
+            os.chmod(self.meta, 0o700)
         except OSError:
             pass
-        self.spaces = self.data / 'spaces'
-        self.spaces.mkdir(mode=0o700, exist_ok=True)
-        self.ufile = self.data / 'users.json'
-        self.sfile = self.data / 'sessions.json'
-        self.hfile = self.data / 'shares.json'
-        self.lock = threading.RLock()
-        self._locks = {}
-        self.quota = quota
-        self._users, self._umt = {}, None
-        self._sess = {}
-        self._vaults = {}
-        self._usage = {}
-        self._dummy = None
-        self._load_sessions()
-        try:
-            with open(self.hfile, encoding='utf-8') as f:
-                self._shares = json.load(f).get('shares', {})
-        except (OSError, ValueError):
-            self._shares = {}
+        self._hash = hash_password(pw)
+        write_private(self.afile, {'version': 1, 'hash': self._hash, 'created': int(time.time())})
 
-    @property
-    def dummy(self):
-        if self._dummy is None:
-            self._dummy = hash_password(secrets.token_urlsafe(18))
-        return self._dummy
-
-    # --- utilisateurs ---
-    def _reload(self):
-        try:
-            mt = self.ufile.stat().st_mtime_ns
-        except FileNotFoundError:
-            self._users, self._umt = {}, None
-            return
-        if mt != self._umt:
-            with open(self.ufile, encoding='utf-8') as f:
-                self._users = json.load(f).get('users', {})
-            self._umt = mt
-
-    def _save_users(self):
-        write_private(self.ufile, {'version': 1, 'users': self._users})
-        self._umt = self.ufile.stat().st_mtime_ns
-
-    def users(self):
-        with self.lock:
-            self._reload()
-            return {k: dict(v, name=k) for k, v in self._users.items()}
-
-    def get(self, name):
-        if not isinstance(name, str):
-            return None
-        with self.lock:
-            self._reload()
-            u = self._users.get(name)
-            return dict(u, name=name) if u else None
-
-    def user_by_id(self, uid):
-        with self.lock:
-            self._reload()
-            for n, u in self._users.items():
-                if u['id'] == uid:
-                    return dict(u, name=n)
-        return None
-
-    def lock_for(self, path):
-        with self.lock:
-            return self._locks.setdefault(str(path), threading.Lock())
-
-    # --- partages (un espace entier ou une seule note, vers un autre utilisateur) ---
-    def _save_shares(self):
-        write_private(self.hfile, {'version': 1, 'shares': self._shares})
-
-    def shares(self):
-        with self.lock:
-            return {k: dict(v) for k, v in self._shares.items()}
-
-    def get_share(self, sid):
-        if not isinstance(sid, str) or not re.fullmatch(r'[\w-]{16,64}', sid):
-            return None
-        with self.lock:
-            s = self._shares.get(sid)
-            return dict(s) if s else None
-
-    def _forget(self, sids):
-        for k in [k for k in self._vaults if len(k) == 3 and k[2] in sids]:
-            del self._vaults[k]
-
-    def add_share(self, owner, space, note, to, role):
-        with self.lock:
-            for sid, s in self._shares.items():       # même cible, même destinataire : mise à jour des droits
-                if (s['owner'], s['space'], s['note'], s['to']) == (owner['id'], space, note, to['id']):
-                    s['role'] = role
-                    self._forget({sid})
-                    self._save_shares()
-                    return sid
-            sid = secrets.token_urlsafe(18)
-            self._shares[sid] = {'owner': owner['id'], 'space': space, 'note': note, 'to': to['id'],
-                                 'role': role, 'created': int(time.time())}
-            self._save_shares()
-            return sid
-
-    def purge_shares(self, pred):
-        with self.lock:
-            gone = {k for k, v in self._shares.items() if pred(v)}
-            if gone:
-                for k in gone:
-                    del self._shares[k]
-                self._forget(gone)
-                self._save_shares()
-
-    def move_shared_note(self, owner_id, space, old, new):
-        with self.lock:
-            hit = {k for k, v in self._shares.items() if (v['owner'], v['space'], v['note']) == (owner_id, space, old)}
-            for k in hit:
-                self._shares[k]['note'] = new
-            if hit:
-                self._forget(hit)
-                self._save_shares()
-
-    def add_user(self, name, pw):
-        h = hash_password(pw)
-        with self.lock:
-            self._reload()
-            if name in self._users:
-                raise ValueError('cet identifiant existe déjà')
-            uid = secrets.token_hex(12)
-            self._users[name] = {'id': uid, 'hash': h, 'pwv': 1, 'created': int(time.time())}
-            self._save_users()
-        d = self.spaces / uid
-        d.mkdir(mode=0o700, exist_ok=True)
-        (d / 'notes').mkdir(mode=0o700, exist_ok=True)
-        return self.get(name)
-
-    def set_password(self, name, pw):
-        h = hash_password(pw)
-        with self.lock:
-            self._reload()
-            u = self._users[name]
-            u['hash'], u['pwv'] = h, int(u.get('pwv', 1)) + 1
-            self._save_users()
-            self.drop_sessions(name)
-        return self.get(name)
-
-    def delete_user(self, name):
-        with self.lock:
-            self._reload()
-            u = self._users.pop(name, None)
-            if not u:
-                return False
-            self._save_users()
-            self.drop_sessions(name)
-            for k in [k for k in self._vaults if k[0] == u['id']]:
-                del self._vaults[k]
-        self.purge_shares(lambda s: u['id'] in (s['owner'], s['to']))
-        d = self.spaces / u['id']
-        if d.is_dir() and not d.is_symlink():
-            shutil.rmtree(d, ignore_errors=True)
-        return True
+    def check(self, pw):
+        with HASH_SEM:
+            return verify_password(pw or '', self._hash or '')
 
     # --- sessions (seul le hachage SHA-256 du jeton est conservé) ---
     @staticmethod
@@ -543,195 +383,77 @@ class Store:
     def _save_sessions(self):
         write_private(self.sfile, self._sess)
 
-    def new_session(self, user):
-        tok = secrets.token_urlsafe(32)
-        now = time.time()
+    def new_session(self):
+        tok, now = secrets.token_urlsafe(32), time.time()
         with self.lock:
             self._sess = {k: v for k, v in self._sess.items() if self._alive(v, now)}
-            self._sess[_sha(tok)] = {'u': user['name'], 'id': user['id'], 'pwv': user['pwv'], 'c': now, 'l': now,
-                                     'csrf': secrets.token_urlsafe(32)}
+            self._sess[_sha(tok)] = {'c': now, 'l': now, 'csrf': secrets.token_urlsafe(32)}
             self._save_sessions()
         return tok
 
     def session(self, tok):
         if not tok or len(tok) > 128:
-            return None, None, None
+            return None, None
         k, now = _sha(tok), time.time()
         with self.lock:
             s = self._sess.get(k)
             if not s:
-                return None, None, None
-            u = self.get(s['u'])
-            if not self._alive(s, now) or not u or u['id'] != s['id'] or u['pwv'] != s['pwv']:
+                return None, None
+            if not self._alive(s, now):
                 del self._sess[k]
                 self._save_sessions()
-                return None, None, None
+                return None, None
             if now - s['l'] > 120:
                 s['l'] = now
                 self._save_sessions()
-            return k, s, u
+            return k, s
 
     def drop_session(self, key):
         with self.lock:
             if self._sess.pop(key, None) is not None:
                 self._save_sessions()
 
-    def drop_sessions(self, name, keep=None):
-        with self.lock:
-            n = len(self._sess)
-            self._sess = {k: v for k, v in self._sess.items() if v['u'] != name or k == keep}
-            if len(self._sess) != n:
-                self._save_sessions()
-
-    def count_sessions(self, name):
-        now = time.time()
-        with self.lock:
-            return sum(1 for v in self._sess.values() if v['u'] == name and self._alive(v, now))
-
-    # --- espaces ---
-    def user_dir(self, user):
-        return self.spaces / user['id']
-
-    def list_spaces(self, user):
-        d = self.user_dir(user)
-        try:
-            return sorted(x.name for x in d.iterdir()
-                          if SPACE_RE.match(x.name) and x.is_dir() and not x.is_symlink())
-        except FileNotFoundError:
-            return []
-
-    def vault(self, user, space, sid=None, share=None):
-        if not isinstance(space, str) or not SPACE_RE.match(space):
-            return None
-        p = self.user_dir(user) / space
-        if p.is_symlink() or not p.is_dir():
-            return None
-        key = (user['id'], space, sid) if sid else (user['id'], space)
-        with self.lock:
-            v = self._vaults.get(key)
-            if v is None:
-                if sid:
-                    v = Vault(p, '/p/' + sid, user, space, self.lock_for(p.resolve()),
-                              only=share['note'], ro=share['role'] != 'w', shared_by=user['name'])
-                else:
-                    v = Vault(p, '/s/' + space, user, space, self.lock_for(p.resolve()))
-                self._vaults[key] = v
-            return v
-
-    def shared_vault(self, viewer, sid):
-        """Espace vu à travers un partage : vérifié à chaque requête (révocation immédiate)."""
-        sh = self.get_share(sid)
-        if not sh or sh['to'] != viewer['id']:
-            return None
-        owner = self.user_by_id(sh['owner'])
-        return self.vault(owner, sh['space'], sid, sh) if owner else None
-
-    def create_space(self, user, space):
-        d = self.user_dir(user)
-        d.mkdir(mode=0o700, exist_ok=True)
-        (d / space).mkdir(mode=0o700)
-
-    def delete_space(self, user, space):
-        p = self.user_dir(user) / space
-        with self.lock:
-            self._vaults.pop((user['id'], space), None)
-        self.purge_shares(lambda s: (s['owner'], s['space']) == (user['id'], space))
-        if p.is_dir() and not p.is_symlink():
-            shutil.rmtree(p)
-        self._usage.pop(user['id'], None)
-
-    # --- quota ---
-    def usage(self, user):
-        now, uid = time.time(), user['id']
-        c = self._usage.get(uid)
-        if c and now - c[0] < 10:
-            return c[1]
-        tot = 0
-        for dp, dn, fn in os.walk(self.user_dir(user)):
-            for f in fn:
-                try:
-                    tot += os.lstat(os.path.join(dp, f)).st_size
-                except OSError:
-                    pass
-        self._usage[uid] = (now, tot)
-        return tot
-
-    def quota_ok(self, user, delta):
-        if not self.quota or delta <= 0:
-            return True
-        if self.usage(user) + delta > self.quota:
-            return False
-        c = self._usage.get(user['id'])
-        if c:
-            self._usage[user['id']] = (c[0], c[1] + delta)
-        return True
-
 
 class Limiter:
-    """Limite les tentatives de connexion par adresse IP et par identifiant."""
-    WINDOW, IP_MAX = 900, 20
+    """Limite les tentatives de mot de passe par adresse IP."""
+    WINDOW, MAX = 900, 10
 
     def __init__(self):
         self.lock = threading.Lock()
-        self.ip, self.user, self.signup = {}, {}, {}
+        self.ip = {}
 
-    def _gc(self, now):
-        if len(self.ip) > 5000:
-            self.ip = {k: v for k, v in self.ip.items() if v and now - v[-1] < self.WINDOW}
-        if len(self.user) > 5000:
-            self.user = {k: v for k, v in self.user.items() if now - v[1] < 3600}
-        if len(self.signup) > 5000:
-            self.signup = {k: v for k, v in self.signup.items() if v and now - v[-1] < 3600}
-
-    def wait(self, ip, user):
+    def wait(self, ip):
         now = time.time()
         with self.lock:
-            w = 0
             lst = [t for t in self.ip.get(ip, ()) if now - t < self.WINDOW]
             if lst:
                 self.ip[ip] = lst
             else:
                 self.ip.pop(ip, None)
-            if len(lst) >= self.IP_MAX:
-                w = lst[0] + self.WINDOW - now
-            c = self.user.get(user)
-            if c and c[0] >= 5:
-                w = max(w, c[1] + min(900, 30 * 2 ** min(c[0] - 5, 6)) - now)
-            return max(0, int(w + 0.999))
+            return max(0, int(lst[0] + self.WINDOW - now + 0.999)) if len(lst) >= self.MAX else 0
 
-    def fail(self, ip, user):
+    def fail(self, ip):
         now = time.time()
         with self.lock:
             self.ip.setdefault(ip, []).append(now)
-            c = self.user.get(user, (0, 0))
-            self.user[user] = (c[0] + 1, now)
-            self._gc(now)
+            if len(self.ip) > 5000:
+                self.ip = {k: v for k, v in self.ip.items() if v and now - v[-1] < self.WINDOW}
 
-    def ok(self, user):
+    def ok(self, ip):
         with self.lock:
-            self.user.pop(user, None)
-
-    def signup_ok(self, ip):
-        now = time.time()
-        with self.lock:
-            lst = [t for t in self.signup.get(ip, ()) if now - t < 3600]
-            if len(lst) >= 3:
-                return False
-            lst.append(now)
-            self.signup[ip] = lst
-            self._gc(now)
-            return True
+            self.ip.pop(ip, None)
 
 
 # --------------------------------------------------------------------------
-# Index d'un espace
+# Index d'une base
 # --------------------------------------------------------------------------
 
 class Index:
     def __init__(self, root):
-        self.notes, self.files, self.all_lower = [], {}, {}
+        self.notes, self.files, self.all_lower, self.dirs = [], {}, {}, []
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = sorted((d for d in dirnames if not d.startswith('.') and d not in SKIP_DIRS), key=str.lower)
+            self.dirs.extend(Path(dirpath, d).relative_to(root).as_posix() for d in dirnames)
             for fn in sorted(filenames, key=str.lower):
                 if fn.startswith('.'):
                     continue
@@ -790,41 +512,6 @@ class Index:
         cands = self.files.get(low.rsplit('/', 1)[-1])
         return min(cands, key=len) if cands else None
 
-    def restrict(self, vault, rel):
-        """Ne garde que la note partagée et les fichiers qu'elle intègre."""
-        keep = set()
-        roots = [rel] + descendants(self.notes, rel) if rel in self.noteset else []   # la note et ses sous-notes
-        for cur in roots:
-            info = vault.info(cur)
-            if not info:
-                continue
-            keep.add(cur)
-            for i, seg in enumerate(split_code(info['body'])):
-                if i % 2:
-                    continue
-                for m in WIKILINK.finditer(seg):
-                    t = m.group(2).strip()
-                    if m.group(1) and '.' in t.rsplit('/', 1)[-1] and not is_note(t):
-                        f = self.resolve_file(t, cur)
-                        if f:
-                            keep.add(f)
-                for m in re.finditer(r'!\[[^\]]*\]\(\s*<?([^)\s>]+)', seg):
-                    t = m.group(1)
-                    if not _SCHEME.match(t.lower()) and not t.startswith('/'):
-                        c = posixpath.normpath(posixpath.join(posixpath.dirname(cur), urllib.parse.unquote(t)))
-                        if c in self.all_lower.values():
-                            keep.add(c)
-        self.notes = [n for n in self.notes if n in keep]
-        self.noteset = set(self.notes)
-        self.files = {k: [x for x in v if x in keep] for k, v in self.files.items()}
-        self.files = {k: v for k, v in self.files.items() if v}
-        self.all_lower = {k: v for k, v in self.all_lower.items() if v in keep}
-        self.by_stem = {k: [x for x in v if x in keep] for k, v in self.by_stem.items()}
-        self.by_stem = {k: v for k, v in self.by_stem.items() if v}
-        self.by_path = {k: v for k, v in self.by_path.items() if v in keep}
-        self._out = {}
-        return self
-
     def out_links(self, vault, rel):
         if rel in self._out:
             return self._out[rel]
@@ -844,25 +531,18 @@ class Index:
 
 
 class Vault:
-    def __init__(self, root, base, owner=None, space='', lock=None, only=None, ro=False, shared_by=None):
+    def __init__(self, root, base=''):
         self.root = Path(root).resolve()
         self.base = base
         self.name = self.root.name
-        self.owner, self.space = owner, space
-        self.lock = lock or threading.Lock()
-        self.only, self.ro, self.shared_by = only, ro, shared_by
-        self.can_create = not ro and not only        # créer, renommer, supprimer
+        self.lock = threading.Lock()
         self._cache = {}
 
     def url(self, rel):
         return self.base + '/note/' + urllib.parse.quote(rel)
 
     def index(self):
-        idx = Index(self.root)
-        return idx.restrict(self, self.only) if self.only else idx
-
-    def allowed(self, rel):
-        return not self.only or rel in self.index().all_lower.values()
+        return Index(self.root)
 
     def info(self, rel):
         p = self.root / rel
@@ -1103,8 +783,6 @@ def _render(vault, idx, rel, body, depth=0, seen=None, interactive=True):
             return T('<a href="%s">📎 %s</a>' % (url, esc(target)))
         dest = idx.resolve_note(target, rel) if target else rel
         label = alias if (alias and not bang) else (target + (' › ' + head if head else '') if target else head)
-        if not dest and not vault.can_create:
-            return T('<span class="wikilink missing">%s</span>' % esc(label))
         if not dest:
             return T('<a class="wikilink missing" href="#" data-new="%s" data-base="%s" '
                      'title="Note inexistante — cliquer pour la créer">%s</a>'
@@ -1313,14 +991,14 @@ def mini_md(src, _depth=0):
 # --------------------------------------------------------------------------
 
 CSS = r"""
-:root,[data-theme=dark]{--bg:#191919;--bg2:#1f1f1f;--bg3:#2a2a2a;--hover:rgba(255,255,255,.055);--fg:#ebebea;--fg2:#c4c4c1;--muted:#9b9a97;--faint:#5f5e5b;
- --accent:#8b7cf6;--accent2:#e070c8;--accent-h:#b4a8ff;--accent-bg:rgba(139,124,246,.15);--border:rgba(255,255,255,.085);--code:#232323;--mark:rgba(255,208,0,.28);
- --shadow:0 20px 50px -12px rgba(0,0,0,.75),0 0 0 1px rgba(255,255,255,.07);--shadow-s:0 1px 2px rgba(0,0,0,.35);
- --ok:#4cc38a;--err:#ef6b6b;--link:#a99bff;--glass:rgba(30,30,32,.72);color-scheme:dark}
-[data-theme=light]{--bg:#ffffff;--bg2:#f7f7f5;--bg3:#efefed;--hover:rgba(55,53,47,.06);--fg:#37352f;--fg2:#4f4d47;--muted:#787774;--faint:#b4b3ae;
- --accent:#6e56e8;--accent2:#d04fb0;--accent-h:#5440d0;--accent-bg:rgba(110,86,232,.1);--border:rgba(55,53,47,.1);--code:#f6f5f2;--mark:rgba(255,212,0,.45);
- --shadow:0 20px 50px -14px rgba(30,25,60,.28),0 0 0 1px rgba(55,53,47,.08);--shadow-s:0 1px 2px rgba(30,25,60,.07);
- --ok:#1f9d63;--err:#d64545;--link:#5a3ed6;--glass:rgba(255,255,255,.78);color-scheme:light}
+:root,[data-theme=light]{--bg:#fbfaf8;--bg2:#f4f1ec;--bg3:#ebe6df;--hover:rgba(90,60,30,.065);--fg:#2b2620;--fg2:#4a423a;--muted:#8a8076;--faint:#bdb3a8;
+ --accent:#8b5e3c;--accent-h:#6f4a2f;--accent-bg:rgba(139,94,60,.11);--border:rgba(70,45,20,.12);--code:#f2eee8;--mark:rgba(214,166,80,.32);
+ --shadow:0 12px 32px -12px rgba(60,40,20,.22),0 0 0 1px rgba(70,45,20,.09);--shadow-s:none;
+ --ok:#4f7a4a;--err:#b0443a;--link:#8b5e3c;color-scheme:light}
+[data-theme=dark]{--bg:#1a1816;--bg2:#201d1a;--bg3:#2a2622;--hover:rgba(255,236,214,.055);--fg:#ebe5dd;--fg2:#c9c0b5;--muted:#9a8f83;--faint:#5e554c;
+ --accent:#c08a5b;--accent-h:#d6a57a;--accent-bg:rgba(192,138,91,.15);--border:rgba(255,235,210,.085);--code:#24211e;--mark:rgba(214,166,80,.26);
+ --shadow:0 16px 40px -14px rgba(0,0,0,.7),0 0 0 1px rgba(255,235,210,.07);--shadow-s:none;
+ --ok:#8fb07f;--err:#e07a6a;--link:#d0a07a;color-scheme:dark}
 :root{--lw:var(--side-w,272px);--rw:280px;--read-w:760px}
 .no-left{--lw:0px}.no-right{--rw:0px}body.noright{--rw:0px}.wide{--read-w:1120px}
 *{box-sizing:border-box}[hidden]{display:none!important}
@@ -1515,143 +1193,75 @@ li.task.done{color:var(--muted)}li.task.done>input{opacity:.8}
 .sres .snip{color:var(--muted);font-size:13.5px;margin-top:3px}
 .searchbig{display:flex;gap:8px;margin:0 0 20px}.searchbig .field{margin:0;font-size:15px}
 
-/* ---- connexion, espaces, compte ---- */
+/* ---- page de déverrouillage ---- */
 html.authpage,html.authpage body{overflow:auto;height:auto;min-height:100%}
-.auth-wrap{min-height:100vh;display:flex;justify-content:center;align-items:flex-start;padding:9vh 16px 48px}
-.auth-card{width:min(400px,100%);background:var(--bg2);border:1px solid var(--border);border-radius:14px;padding:26px 26px 22px;box-shadow:var(--shadow)}
-.auth-wide{width:min(780px,100%)}
-.brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:16px;color:var(--fg);text-decoration:none}
-.brand .i{color:var(--accent)}
-.auth-h{font-size:1.45em;font-weight:700;margin:18px 0 6px}
-.lbl{display:block;font-size:13px;color:var(--fg2);margin-top:14px}
-.alert{padding:9px 12px;border-radius:8px;font-size:13.5px;margin:12px 0 4px;border:1px solid var(--border)}
-.alert.err{border-color:var(--err);color:var(--err);background:color-mix(in srgb,var(--err) 9%,transparent)}
-.alert.ok{border-color:var(--ok);color:var(--ok);background:color-mix(in srgb,var(--ok) 9%,transparent)}
-.auth-foot{margin-top:18px;font-size:13px;color:var(--muted);text-align:center}
-.topbar{display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap}.topbar .sp{flex:1}
-.topbar .who{color:var(--muted);font-size:13.5px}
-.box{border:1px solid var(--border);border-radius:12px;padding:16px 18px 18px;margin:18px 0 0;background:var(--bg)}
-.box h2{font-size:15px;margin:0 0 4px}.box p{margin:0;color:var(--muted);font-size:13.5px}
-.box.danger{border-color:color-mix(in srgb,var(--err) 45%,var(--border))}
-.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}.row .field{flex:1;min-width:180px}
-select.field{appearance:auto}
-.row .lbl{flex:1;min-width:180px}
-.srow{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);flex-wrap:wrap}
-.srow:first-of-type{border-top:0}.srow .sinfo{flex:1;min-width:200px}.srow small{display:block;color:var(--muted);font-size:12.5px}
-.badge{display:inline-block;font-size:11px;font-weight:650;padding:1px 8px;border-radius:999px;background:var(--bg3);color:var(--muted);margin-left:6px;vertical-align:1px}
-.badge.w{background:var(--accent-bg);color:var(--link)}
-.vault small{display:block;font-weight:400;font-size:11.5px;color:var(--muted)}
-.ro .tree-row .add{display:none}
+.auth-wrap{min-height:100vh;display:flex;justify-content:center;align-items:flex-start;padding:16vh 16px 48px}
+.auth-card{width:min(380px,100%);background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:30px 28px 26px;box-shadow:var(--shadow)}
+.brand{display:flex;align-items:center;gap:9px;font-weight:600;font-size:14px;color:var(--muted);text-decoration:none}
+.auth-h{font-family:var(--serif);font-size:1.85em;font-weight:600;letter-spacing:-.01em;margin:22px 0 4px;color:var(--fg);word-break:break-word}
+.auth-sub{color:var(--muted);margin:0 0 6px;font-size:14px}
+.lbl{display:block;font-size:13px;color:var(--fg2);margin-top:16px}
+.alert{padding:9px 12px;border-radius:8px;font-size:13.5px;margin:14px 0 4px;border:1px solid var(--border)}
+.alert.err{border-color:color-mix(in srgb,var(--err) 50%,transparent);color:var(--err);background:color-mix(in srgb,var(--err) 7%,transparent)}
+.alert.ok{border-color:color-mix(in srgb,var(--ok) 50%,transparent);color:var(--ok);background:color-mix(in srgb,var(--ok) 7%,transparent)}
+.btn.wide{width:100%;justify-content:center;padding:10px 14px}
+
+/* ---- sous-notes, dossiers ---- */
 summary.tree-row.parent a.name{color:inherit;text-decoration:none}
-summary.tree-row.current{background:var(--accent-bg);color:var(--fg);font-weight:550}
+summary.tree-row .fi{width:15px;height:15px;color:var(--faint);margin-right:-1px}
+summary.tree-row.folder .name{color:var(--fg2)}
 .crumbs a{color:inherit;text-decoration:none}.crumbs a:hover{color:var(--fg)}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:999px;background:var(--bg3);color:var(--muted)}
 .subpages{margin-top:2.6em;padding-top:1.2em;border-top:1px solid var(--border)}
 .subpages .h3{display:flex;gap:8px;align-items:center}
-.sublist{display:flex;flex-direction:column;gap:2px;margin:0 -10px 12px}
-.subitem{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:8px;color:var(--fg);text-decoration:none}
-.subitem:hover{background:var(--hover)}.subitem .i{color:var(--muted)}.subitem small{margin-left:auto;color:var(--faint);font-size:12px}
+.sublist{display:flex;flex-direction:column;gap:1px;margin:0 -10px 12px}
+.subitem{display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:7px;color:var(--fg);text-decoration:none}
+.subitem:hover{background:var(--hover)}.subitem .i{color:var(--faint)}.subitem small{margin-left:auto;color:var(--faint);font-size:12px}
 .btn.ghost{border-color:transparent;background:transparent;color:var(--muted);padding-left:8px}.btn.ghost:hover{color:var(--fg);background:var(--hover)}
 
-/* ==== finitions ==== */
-body{font-family:"Inter var",Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-feature-settings:"cv11","ss01","ss03";letter-spacing:-.003em}
+/* ==== finitions : sobre, papier et brun ==== */
+:root{--serif:"Iowan Old Style","Palatino Linotype",Palatino,"Book Antiqua",Georgia,"Noto Serif",serif}
+body{font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;letter-spacing:-.002em}
 button,input,select,textarea{font-family:inherit}
-:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 70%,transparent);outline-offset:2px}
-.field:focus-visible,.share-input input:focus-visible,#src:focus-visible,.title:focus-visible{outline:none}
-.side-head{padding:10px 8px 6px 8px;gap:2px}
-.vault{display:flex;align-items:center;gap:9px;padding:5px 6px;border-radius:8px;min-width:0;transition:background .12s}
-.vault:hover{background:var(--hover)}.vault .vt{min-width:0;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
-.vault small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.sp-ico{flex:none;display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;font-size:12.5px;font-weight:700;color:#fff;
- background:linear-gradient(135deg,hsl(var(--h) 72% 63%),hsl(calc(var(--h) + 40) 68% 50%));box-shadow:inset 0 0 0 1px rgba(255,255,255,.16),0 3px 8px -3px hsl(var(--h) 60% 40% / .7)}
-.sp-ico.big{width:44px;height:44px;border-radius:13px;font-size:19px}
-.searchbtn{background:var(--bg);border-color:var(--border);border-radius:9px;box-shadow:var(--shadow-s);transition:border-color .15s}
-.searchbtn:hover{border-color:color-mix(in srgb,var(--accent) 40%,var(--border))}
-.side-nav a,.tree-row{border-radius:7px;transition:background .12s,color .12s}
-a.tree-row.current,summary.tree-row.current{background:var(--accent-bg);color:var(--fg);box-shadow:inset 2px 0 0 var(--accent)}
+:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 60%,transparent);outline-offset:2px}
+.field:focus-visible,#src:focus-visible,.title:focus-visible{outline:none}
+.side-head{padding:10px 6px 6px 8px;gap:0}
+.vault{display:flex;align-items:center;gap:9px;padding:5px 6px;border-radius:7px;min-width:0}
+.vault:hover{background:var(--hover)}.vault .vt{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.logo{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:6px;background:var(--accent);flex:none}
+.logo .i{color:var(--bg);width:14px;height:14px;stroke-width:2.4}
+.searchbtn{background:var(--bg);border-color:var(--border);border-radius:8px}
+.searchbtn:hover{border-color:color-mix(in srgb,var(--accent) 35%,var(--border))}
+.side-nav a,.tree-row{border-radius:6px;transition:background .1s,color .1s}
+a.tree-row.current,summary.tree-row.current{background:var(--accent-bg);color:var(--fg);font-weight:550}
 #tree ul ul{border-left-color:var(--border)}
-#top{background:color-mix(in srgb,var(--bg) 85%,transparent);backdrop-filter:saturate(1.4) blur(10px);-webkit-backdrop-filter:saturate(1.4) blur(10px)}
-.seg{border-radius:9px}.seg button{border-radius:7px}
-.title{font-size:2.6em;font-weight:760;letter-spacing:-.024em;line-height:1.15}
-.page-title{font-weight:760;letter-spacing:-.024em}
-.md h1,.md h2,.md h3{letter-spacing:-.016em}
-.md pre{border-radius:12px}.md code{border-radius:6px}
-.btn{border-radius:9px;font-weight:550;transition:background .15s,border-color .15s,box-shadow .15s,transform .08s,filter .15s;box-shadow:var(--shadow-s)}
-.btn:active{transform:translateY(1px)}
-.btn.primary{background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 55%,var(--accent2)));border-color:transparent;
- box-shadow:0 1px 0 rgba(255,255,255,.2) inset,0 6px 16px -6px color-mix(in srgb,var(--accent) 75%,transparent)}
-.btn.primary:hover{filter:brightness(1.08)}
-.btn.danger{box-shadow:0 6px 16px -9px var(--err)}
-.btn.ghost{box-shadow:none}
-.field{border-radius:9px;transition:border-color .15s,box-shadow .15s}
-.field:hover{border-color:color-mix(in srgb,var(--fg) 18%,var(--border))}
-.field:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-bg)}
-#ov{background:rgba(8,8,12,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);animation:fade .16s ease-out}
-[data-theme=light] #ov{background:rgba(40,35,60,.2)}
-.modal{border-radius:16px;border:0;box-shadow:var(--shadow);background:var(--bg2);animation:pop .24s cubic-bezier(.2,1.2,.3,1)}
-[data-theme=light] .modal,[data-theme=light] .menu,[data-theme=light] .toast{background:var(--bg)}
-@keyframes pop{from{transform:translateY(8px) scale(.97);opacity:0}}
-.menu{border-radius:12px;border:0;box-shadow:var(--shadow);padding:6px;background:var(--bg2);animation:pop .16s cubic-bezier(.2,1.2,.3,1)}
-.menu button{border-radius:7px}
-.toast{border-radius:12px;border:0;box-shadow:var(--shadow);background:var(--bg2);display:flex;gap:11px;align-items:center;padding:11px 16px}
-.toast::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none;box-shadow:0 0 0 4px var(--accent-bg)}
-.toast.ok::before{background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 22%,transparent)}
-.toast.err::before{background:var(--err);box-shadow:0 0 0 4px color-mix(in srgb,var(--err) 22%,transparent)}
-#peek,#ac{border-radius:14px;border:0;box-shadow:var(--shadow)}
-.card{border-radius:14px;padding:16px 17px;transition:border-color .2s,transform .2s,box-shadow .2s}
-.card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--accent) 45%,var(--border));box-shadow:0 16px 34px -20px color-mix(in srgb,var(--accent) 80%,transparent)}
-.space-card{gap:8px}.space-card .sp-ico{margin-bottom:6px}
-.space-card .tag-s{align-self:flex-start;font-size:11.5px;font-weight:600;color:var(--link);background:var(--accent-bg);padding:1px 8px;border-radius:999px}
-.card.new{align-items:center;justify-content:center;border-style:dashed;color:var(--muted);background:transparent;min-height:120px}
-/* pages de compte */
-html.authpage body{background:radial-gradient(900px 520px at 8% -12%,color-mix(in srgb,var(--accent) 24%,transparent),transparent 62%),
- radial-gradient(760px 520px at 108% 6%,color-mix(in srgb,var(--accent2) 16%,transparent),transparent 60%),var(--bg);background-attachment:fixed}
-.auth-card{background:var(--glass);backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);border:0;border-radius:20px;box-shadow:var(--shadow);padding:30px 30px 26px}
-.logo{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));
- box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 6px 18px -6px color-mix(in srgb,var(--accent) 85%,transparent)}
-.brand .logo .i{color:#fff;width:17px;height:17px;stroke-width:2.3}
-.brand{font-size:16.5px;letter-spacing:-.015em}
-.auth-h{font-size:1.8em;font-weight:760;letter-spacing:-.028em;margin:24px 0 4px}
-.auth-sub{color:var(--muted);margin:0 0 8px;font-size:14.5px}
-.btn.wide{width:100%;justify-content:center;padding:10px 14px;font-size:14.5px}
-.box{border-radius:14px;background:color-mix(in srgb,var(--bg) 55%,transparent);border-color:var(--border);padding:18px 20px 20px}
-.box h2{font-size:15.5px;font-weight:680;letter-spacing:-.01em}
-.topbar{padding-bottom:14px;border-bottom:1px solid var(--border);margin-bottom:6px}
-.topbar .btn{box-shadow:none;background:transparent;border-color:transparent;color:var(--fg2);padding:6px 10px}
-.topbar .btn:hover{background:var(--hover);color:var(--fg)}
-.alert{border-radius:10px}
-.srow .av{margin-right:2px}
-/* fenêtre de partage */
-.modal-share{width:min(540px,94vw)}
-.share{padding:20px 20px 0}
-.share-head{display:flex;gap:13px;align-items:flex-start}
-.share-ico{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--accent-bg),color-mix(in srgb,var(--accent2) 14%,transparent));color:var(--accent);flex:none}
-.share-ico .i{width:20px;height:20px}
-.share-t{flex:1;min-width:0}.share-t h3{margin:2px 0 2px;font-size:16.5px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.share-t p{margin:0;color:var(--muted);font-size:13px}
-.share-invite{display:flex;gap:8px;margin:18px 0 4px}
-.share-input{flex:1;display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:0 11px;background:var(--bg);transition:border-color .15s,box-shadow .15s;min-width:0}
-.share-input:focus-within{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-bg)}
-.share-input .i{width:16px;height:16px;color:var(--muted)}
-.share-input input{flex:1;border:0;outline:0;background:transparent;color:var(--fg);font:inherit;font-size:14px;padding:9px 0;min-width:0}
-.share-role{border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--fg);font:inherit;font-size:13.5px;padding:0 8px;cursor:pointer}
-.share-role.sm{border-color:transparent;background:transparent;color:var(--muted);padding:5px 4px;font-size:13px}
-.share-role.sm:hover{background:var(--hover);color:var(--fg)}
-.share-sec{font-size:11px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:18px 0 6px}
-.share-list{max-height:min(320px,42vh);overflow:auto;margin:0 -10px;padding:0 2px}
-.share-row{display:flex;align-items:center;gap:11px;padding:7px 8px;border-radius:11px;animation:fade .2s}
-.share-row:hover{background:var(--hover)}
-.share-row .ib{width:28px;height:28px;opacity:.5}.share-row:hover .ib{opacity:1}.share-row .ib.del:hover{color:var(--err)}
-.share-who{flex:1;min-width:0}.share-who b{display:block;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.share-who small{color:var(--muted);font-size:12px}.share-who .you{color:var(--muted);font-weight:400}
-.share-pill{font-size:12.5px;color:var(--muted);padding:0 6px;white-space:nowrap}
-.av{display:inline-grid;place-items:center;width:32px;height:32px;border-radius:50%;flex:none;font-weight:700;font-size:13.5px;color:#fff;
- background:linear-gradient(135deg,hsl(var(--h) 70% 62%),hsl(calc(var(--h) + 35) 66% 48%));box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
-.share-foot{display:flex;align-items:center;gap:9px;margin:16px -20px 0;padding:12px 20px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px;
- background:color-mix(in srgb,var(--bg3) 35%,transparent);border-radius:0 0 16px 16px}
-.share-foot .i{width:15px;height:15px;flex:none}.share-foot span{flex:1}.share-foot a{color:var(--link);text-decoration:none;white-space:nowrap}
-.share-foot a:hover{text-decoration:underline}
-.share-load{height:44px;margin:0 8px;border-radius:11px;background:linear-gradient(90deg,var(--hover),transparent,var(--hover));background-size:200% 100%;animation:shim 1.2s infinite linear}
-@keyframes shim{to{background-position:-200% 0}}
+.tree-row .add{color:var(--faint)}
+a.tag{background:transparent;border:1px solid var(--border);color:var(--fg2)}
+a.tag:hover{background:var(--accent-bg);color:var(--accent);border-color:transparent}
+.seg{border-radius:8px}.seg button{border-radius:6px}
+.title,.page-title{font-family:var(--serif);font-weight:600;letter-spacing:-.012em}
+.title{font-size:2.5em;line-height:1.15}
+.md h1,.md h2,.md h3{font-family:var(--serif);font-weight:600;letter-spacing:-.008em}
+.md blockquote{border-left:2px solid var(--accent)}
+.md .callout{background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.md pre{border-radius:9px}.md code{border-radius:5px}
+.md a.wikilink{border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+.md a.wikilink:hover{text-decoration:none;border-bottom-color:var(--accent)}
+.btn{border-radius:8px;font-weight:500;transition:background .12s,border-color .12s}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.btn.primary:hover{filter:none;background:var(--accent-h);border-color:var(--accent-h)}
+.field{border-radius:8px}.field:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-bg)}
+#ov{background:rgba(30,20,10,.28);animation:fade .12s ease-out}
+[data-theme=dark] #ov{background:rgba(0,0,0,.5)}
+.modal,.menu,#peek,#ac,.toast{border:0;box-shadow:var(--shadow);background:var(--bg)}
+[data-theme=dark] .modal,[data-theme=dark] .menu,[data-theme=dark] #peek,[data-theme=dark] #ac,[data-theme=dark] .toast{background:var(--bg2)}
+.modal{border-radius:12px}.menu{border-radius:10px}.menu button{border-radius:6px}
+.toast{border-radius:10px;display:flex;gap:10px;align-items:center;border-left:0}
+.toast::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent);flex:none}
+.toast.ok::before{background:var(--ok)}.toast.err::before{background:var(--err)}
+.card{border-radius:10px;background:var(--bg);transition:border-color .15s}
+.card:hover{transform:none;border-color:color-mix(in srgb,var(--accent) 45%,var(--border))}
+.task-cb:checked{background:var(--accent);border-color:var(--accent)}
 
 /* ---- petits écrans ---- */
 @media (max-width:1100px){
@@ -1668,7 +1278,6 @@ html.authpage body{background:radial-gradient(900px 520px at 8% -12%,color-mix(i
  .edwrap{grid-template-columns:1fr!important}#preview{display:none!important}
  #src{padding:22px 18px 45vh}
  .auth-card{padding:22px 16px}
- .share-invite{flex-wrap:wrap}.share-input{flex-basis:100%}.share-role{padding:8px}
 }
 """
 
@@ -1689,7 +1298,6 @@ const dirOf=p=>p.includes('/')?p.slice(0,p.lastIndexOf('/')):'';
 const LS={get(k,d){try{const v=localStorage.getItem('mdv-'+k);return v===null?d:JSON.parse(v);}catch(e){return d;}},
           set(k,v){try{localStorage.setItem('mdv-'+k,JSON.stringify(v));}catch(e){}}};
 const SK=k=>k+':'+B;
-const CAN=!MDV.ro&&!MDV.single;   /* créer / renommer / supprimer */
 const sc=$('#scroller');
 
 async function call(url,data,retry){
@@ -1704,6 +1312,7 @@ async function call(url,data,retry){
   return j;
 }
 const api=(u,d)=>call(B+u,d);
+const pathOf=href=>decodeURIComponent((href||'').slice(NP.length).split('#')[0].split('?')[0]);
 
 /* ---------- toasts ---------- */
 function toast(msg,kind,ms){
@@ -1755,45 +1364,11 @@ function showHelp(){
   const b=$('[data-ok]',m);b.focus();b.onclick=closeOverlay;
 }
 
-/* ---------- partage : fenêtre intégrée ---------- */
-const AV=n=>{let h=0;for(const c of String(n))h=(h*31+c.charCodeAt(0))%360;return '<span class="av" style="--h:'+h+'">'+escH(String(n).slice(0,1).toUpperCase())+'</span>';};
-const ROLE=r=>r==='w'?'Peut modifier':'Peut lire';
-function openShare(note,label,kids){
-  if(!MDV.owner)return;
-  const sub=note?(kids?'Cette note et ses '+kids+' sous-note(s)':'Cette note uniquement'):'Toutes les notes de cet espace';
-  const m=openOverlay('<div class="share"><div class="share-head"><span class="share-ico">'+ICON(note?'file':'spaces')+'</span>'+
-    '<div class="share-t"><h3>Partager « '+escH(label)+' »</h3><p>'+escH(sub)+'</p></div><button class="ib" data-x title="Fermer (Échap)">'+ICON('x')+'</button></div>'+
-    '<form class="share-invite"><label class="share-input">'+ICON('user')+'<input name="to" placeholder="Identifiant de la personne à inviter" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" required></label>'+
-    '<select class="share-role" name="role" title="Droits"><option value="r">Peut lire</option><option value="w">Peut modifier</option></select>'+
-    '<button class="btn primary">Inviter</button></form>'+
-    '<div class="share-sec">Personnes ayant accès</div><div class="share-list"><div class="share-load"></div></div>'+
-    '<div class="share-foot">'+ICON('lock')+'<span>Privé : seules les personnes invitées y ont accès.</span><a href="/shares">Tous mes partages</a></div></div>',null,'modal-share');
-  const list=$('.share-list',m),form=$('form',m),inp=$('input',form),body={space:MDV.space,note:note||''};
-  $('[data-x]',m).onclick=closeOverlay;
-  function draw(j){
-    let h='<div class="share-row">'+AV(MDV.user)+'<div class="share-who"><b>'+escH(MDV.user)+' <span class="you">(vous)</span></b><small>Propriétaire</small></div><span class="share-pill">Accès complet</span></div>';
-    (j.inherited||[]).forEach(s=>{h+='<div class="share-row">'+AV(s.to)+'<div class="share-who"><b>'+escH(s.to)+'</b><small>'+escH(s.via)+'</small></div><span class="share-pill">'+ROLE(s.role)+'</span></div>';});
-    (j.shares||[]).forEach(s=>{h+='<div class="share-row" data-id="'+escH(s.id)+'" data-to="'+escH(s.to)+'">'+AV(s.to)+'<div class="share-who"><b>'+escH(s.to)+'</b><small>Invité'+(s.since?' le '+escH(s.since):'')+'</small></div>'+
-      '<select class="share-role sm" title="Changer les droits"><option value="r"'+(s.role==='r'?' selected':'')+'>Peut lire</option><option value="w"'+(s.role==='w'?' selected':'')+'>Peut modifier</option></select>'+
-      '<button class="ib copy-l" title="Copier son lien d\'accès">'+ICON('link')+'</button><button class="ib del" title="Retirer l\'accès">'+ICON('x')+'</button></div>';});
-    list.innerHTML=h;
-  }
-  const load=()=>call('/api/shares?space='+encodeURIComponent(MDV.space)+'&note='+encodeURIComponent(note||'')).then(draw).catch(e=>{list.innerHTML='<p class="share-pill">'+escH(e.message)+'</p>';});
-  form.onsubmit=async e=>{e.preventDefault();const to=inp.value.trim().toLowerCase();if(!to)return;
-    try{draw(await call('/api/shares/new',Object.assign({to,role:form.role.value},body)));inp.value='';toast(to+' a maintenant accès','ok');}
-    catch(err){toast(err.message,'err');inp.focus();}};
-  list.addEventListener('change',async e=>{const row=e.target.closest('.share-row[data-id]');if(!row)return;
-    try{draw(await call('/api/shares/new',Object.assign({to:row.dataset.to,role:e.target.value},body)));toast('Droits mis à jour','ok',1400);}catch(err){toast(err.message,'err');load();}});
-  list.addEventListener('click',async e=>{const row=e.target.closest('.share-row[data-id]');if(!row)return;
-    if(e.target.closest('.del')){try{await call('/api/shares/delete',{id:row.dataset.id});row.style.opacity='0';toast('Accès retiré pour '+row.dataset.to,'ok');setTimeout(load,150);}catch(err){toast(err.message,'err');}}
-    else if(e.target.closest('.copy-l'))copyText(location.origin+'/p/'+row.dataset.id+'/','Lien copié — il ne fonctionne que pour '+row.dataset.to);});
-  load();setTimeout(()=>inp.focus(),30);
-}
-
 /* ---------- menus ---------- */
 let menuEl=null;
 function closeMenu(){if(menuEl){menuEl.remove();menuEl=null;}}
-function openMenu(anchor,entries){
+function openMenuAt(x,y,entries){openMenu({getBoundingClientRect:()=>({left:x,right:x,top:y,bottom:y-6}),closest:()=>1},entries);}
+function openMenu(anchor,entries){entries=entries.filter(x=>x!==false);
   closeMenu();menuEl=document.createElement('div');menuEl.className='menu';
   entries.forEach(en=>{
     if(!en){menuEl.appendChild(document.createElement('hr'));return;}
@@ -1837,25 +1412,71 @@ $$('#tree details').forEach(d=>{
 });
 const collapseAll=()=>{$$('#tree details').forEach(d=>d.open=false);openSet.clear();LS.set(SK('open'),[]);};
 $('#b-space').onclick=e=>openMenu(e.currentTarget,[
-  MDV.owner&&{icon:'share',label:"Partager l'espace…",act:()=>openShare(null,MDV.space)},
-  CAN&&{icon:'fileplus',label:'Nouvelle note',kb:'Alt+N',act:()=>newNote('')},
+  {icon:'fileplus',label:'Nouvelle note',kb:'Alt+N',act:()=>newNote('')},
+  {icon:'folderplus',label:'Nouveau dossier',act:()=>newFolder('')},
   {icon:'collapse',label:"Replier l'arborescence",act:collapseAll},
   null,
-  {icon:'link',label:'Tous mes partages',act:()=>location.href='/shares'},
-  {icon:'spaces',label:"Changer d'espace",act:()=>location.href='/'}
-].filter(x=>x!==false));
+  {icon:'lock',label:'Verrouiller la base',act:()=>$('#f-lock').submit()}
+]);
+$('#b-folder').onclick=()=>newFolder('');
 const curRow=$('#tree a.current');
 if(curRow){const s=$('.side-scroll');s.scrollTop=Math.max(0,curRow.offsetTop-s.clientHeight/2);}
 $('#tree').addEventListener('click',e=>{const b=e.target.closest('button.add');if(b){e.preventDefault();e.stopPropagation();newNote(b.dataset.folder);}});
 
 /* ---------- notes : création, récentes ---------- */
 async function newNote(base,name,title){
-  if(!CAN)return;
   if(!name)name=await ask(title||(base?'Nouvelle note dans « '+base+' »':'Nouvelle note'),'', 'Créer','Astuce : « dossier/nom » pour créer dans un sous-dossier.');
   if(!name)return;
   try{const j=await api('/api/new',{name,base:base||''});location.href=j.url;}catch(e){toast('Création impossible : '+e.message,'err');}
 }
-const bn=$('#b-new');if(bn)bn.onclick=()=>newNote('');
+$('#b-new').onclick=()=>newNote('');
+async function newFolder(base){
+  const name=await ask(base?'Nouveau dossier dans « '+base+' »':'Nouveau dossier','','Créer');if(!name)return;
+  try{const j=await api('/api/mkdir',{name,base:base||''});LS.set(SK('open'),[...new Set([...LS.get(SK('open'),[]),...j.open])]);
+    LS.set('flash','Dossier « '+j.path+' » créé');location.reload();}catch(e){toast('Création impossible : '+e.message,'err');}
+}
+async function renameFolder(path){
+  const old=path.split('/').pop(),v=await ask('Renommer le dossier',old,'Renommer','Les liens vers les notes du dossier seront mis à jour.');
+  if(!v||v===old)return;
+  try{const j=await api('/api/rendir',{path,name:v});LS.set('flash','Dossier renommé'+(j.updated?' — liens mis à jour dans '+j.updated+' note(s)':''));
+    location.href=NOTE&&NOTE.startsWith(path+'/')?enc(j.path+NOTE.slice(path.length)):location.pathname;}
+  catch(e){toast('Renommage impossible : '+e.message,'err');}
+}
+async function deleteFolder(path){
+  if(!await confirmBox('Supprimer le dossier « '+path.split('/').pop()+' » ?','Le dossier et tout son contenu seront déplacés dans .trash/.','Supprimer',true))return;
+  try{await api('/api/rmdir',{path});LS.set('flash','Dossier déplacé dans .trash/');
+    location.href=NOTE&&NOTE.startsWith(path+'/')?'/':location.pathname;}catch(e){toast('Suppression impossible : '+e.message,'err');}
+}
+async function renameNote(p,name){
+  const v=await ask('Renommer la note',name,'Renommer','Les [[liens]] des autres notes seront mis à jour.');if(!v||v===name)return;
+  try{const j=await api('/api/rename',{path:p,name:v});LS.set('flash','Note renommée');location.href=p===NOTE?j.url:location.pathname;}
+  catch(e){toast('Renommage impossible : '+e.message,'err');}
+}
+async function deleteNote(p,name){
+  if(!await confirmBox('Supprimer « '+name+' » ?','La note (et ses éventuelles sous-notes) sera déplacée dans .trash/.','Supprimer',true))return;
+  try{await api('/api/delete',{path:p});LS.set('flash','Note déplacée dans .trash/');location.href=p===NOTE?'/':location.pathname;}
+  catch(e){toast('Suppression impossible : '+e.message,'err');}
+}
+/* menu contextuel de l'arborescence */
+$('#tree').addEventListener('contextmenu',e=>{
+  const row=e.target.closest('.tree-row');if(!row)return;e.preventDefault();
+  const det=row.closest('details'),folder=row.classList.contains('folder')?det.dataset.path:null;
+  const a=row.matches('a')?row:row.querySelector('a.name');
+  if(folder)openMenuAt(e.clientX,e.clientY,[
+    {icon:'fileplus',label:'Nouvelle note ici',act:()=>newNote(folder)},
+    {icon:'folderplus',label:'Nouveau dossier ici',act:()=>newFolder(folder)},
+    null,
+    {icon:'pencil',label:'Renommer…',act:()=>renameFolder(folder)},
+    {icon:'trash',label:'Supprimer',cls:'danger',act:()=>deleteFolder(folder)}]);
+  else if(a){const p=pathOf(a.getAttribute('href')),nm=a.textContent.trim(),cd=p.replace(/\.(md|markdown)$/i,'');
+    openMenuAt(e.clientX,e.clientY,[
+    {icon:'file',label:'Ouvrir dans un nouvel onglet',act:()=>window.open(enc(p),'_blank','noopener')},
+    {icon:'fileplus',label:'Nouvelle sous-note',act:()=>newNote(cd,null,'Nouvelle sous-note de « '+nm+' »')},
+    {icon:'link',label:'Copier le lien [[…]]',act:()=>copyText('[['+nm+']]','Lien copié')},
+    null,
+    {icon:'pencil',label:'Renommer…',act:()=>renameNote(p,nm)},
+    {icon:'trash',label:'Supprimer',cls:'danger',act:()=>deleteNote(p,nm)}]);}
+});
 const qn=$('#q-new');if(qn)qn.onclick=()=>newNote('');
 document.addEventListener('click',e=>{
   const a=e.target.closest('a.wikilink.missing[data-new]');
@@ -1902,7 +1523,7 @@ function openPalette(initial){
       res.sort((a,b)=>b[0]-a[0]);res.slice(0,50).forEach(([s,n,idx],i)=>out.push(noteItem(n,idx,i?null:'Notes')));
       const ql=q.toLowerCase(),exact=NOTES.some(n=>n.nl===ql||n.pl.replace(/\.(md|markdown)$/,'')===ql);
       let fa=true;
-      if(!exact&&CAN){out.push({action:1,head:'Actions',html:ICON('plus')+'<span class="pn">Créer la note « <b>'+escH(q)+'</b> »</span>',act:()=>newNote('',q)});fa=false;}
+      if(!exact){out.push({action:1,head:'Actions',html:ICON('plus')+'<span class="pn">Créer la note « <b>'+escH(q)+'</b> »</span>',act:()=>newNote('',q)});fa=false;}
       out.push({action:1,head:fa?'Actions':null,html:ICON('search')+'<span class="pn">Chercher « '+escH(q)+' » dans toutes les notes</span>',act:()=>location.href=B+'/search?q='+encodeURIComponent(q)});
     }
     items=out;sel=0;draw();
@@ -2040,7 +1661,7 @@ if(NOTE){
     document.body.classList.toggle('editing',edit);view.hidden=edit;ed.hidden=!edit;bPrev.hidden=!edit;
   }
   function openEditor(){
-    if(editing()||MDV.ro)return;
+    if(editing())return;
     const ratio=sc.scrollTop/Math.max(1,sc.scrollHeight-sc.clientHeight);
     setMode(true);ta.focus({preventScroll:true});
     requestAnimationFrame(()=>{ta.scrollTop=ratio*(ta.scrollHeight-ta.clientHeight);});
@@ -2218,7 +1839,7 @@ if(NOTE){
     catch(e){toast('Renommage impossible : '+e.message,'err');if(tt)tt.textContent=NAME;}
   }
   async function del(){
-    if(!await confirmBox('Supprimer « '+NAME+' » ?',(KIDS?'La note et ses '+KIDS+' sous-note(s) seront déplacées':'La note sera déplacée')+' dans le dossier .trash/ de cet espace.','Supprimer',true))return;
+    if(!await confirmBox('Supprimer « '+NAME+' » ?',(KIDS?'La note et ses '+KIDS+' sous-note(s) seront déplacées':'La note sera déplacée')+' dans le dossier .trash/ de la base.','Supprimer',true))return;
     try{await api('/api/delete',{path:NOTE});setDirty(false);LS.set('flash','Note déplacée dans .trash/');location.href=B+'/';}
     catch(e){toast('Suppression impossible : '+e.message,'err');}
   }
@@ -2228,16 +1849,15 @@ if(NOTE){
     tt.addEventListener('paste',e=>{e.preventDefault();document.execCommand('insertText',false,(e.clipboardData.getData('text/plain')||'').replace(/\s+/g,' '));});
   }
   $('#b-more').onclick=e=>openMenu(e.currentTarget,[
-    CAN&&{icon:'fileplus',label:'Nouvelle sous-note',act:newChild},
-    CAN&&{icon:'pencil',label:'Renommer…',act:()=>ask('Renommer la note',NAME,'Renommer','Les [[liens]] des autres notes seront mis à jour.').then(v=>{if(v&&v!==NAME)rename(v);})},
+    {icon:'fileplus',label:'Nouvelle sous-note',act:newChild},
+    {icon:'pencil',label:'Renommer…',act:()=>ask('Renommer la note',NAME,'Renommer','Les [[liens]] des autres notes seront mis à jour.').then(v=>{if(v&&v!==NAME)rename(v);})},
     {icon:'link',label:'Copier le lien [[…]]',act:()=>copyText('[['+NAME+']]','Lien copié')},
-    MDV.owner&&{icon:'share',label:'Partager…',act:()=>openShare(NOTE,NAME,KIDS)},
     null,
     {icon:'width',label:D.classList.contains('wide')?'Largeur de lecture normale':'Largeur de lecture étendue',act:()=>{D.classList.toggle('wide');LS.set('wide',D.classList.contains('wide'));}},
     {icon:'type',label:D.classList.contains('mono')?'Éditeur : police proportionnelle':'Éditeur : police à chasse fixe',act:()=>{D.classList.toggle('mono');LS.set('mono',D.classList.contains('mono'));}},
-    CAN&&null,
-    CAN&&{icon:'trash',label:'Supprimer',cls:'danger',act:del}
-  ].filter(x=>x!==false));
+    null,
+    {icon:'trash',label:'Supprimer',cls:'danger',act:del}
+  ]);
 
   document.addEventListener('keydown',e=>{
     const mod=e.ctrlKey||e.metaKey,k=e.key.toLowerCase();
@@ -2254,23 +1874,24 @@ if(NOTE){
 """
 
 HEAD_JS = ("(function(){try{var d=document.documentElement,g=function(k,v){var x=localStorage.getItem('mdv-'+k);"
-           "return x===null?v:JSON.parse(x);};d.dataset.theme=g('theme','dark');if(g('left',true)===false)d.classList.add('no-left');"
+           "return x===null?v:JSON.parse(x);};d.dataset.theme=g('theme',matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');if(g('left',true)===false)d.classList.add('no-left');"
            "if(g('right',true)===false)d.classList.add('no-right');if(g('wide',false))d.classList.add('wide');"
            "if(g('mono',false))d.classList.add('mono');var w=g('sidew',0);if(w)d.style.setProperty('--side-w',w+'px');}catch(e){}})();")
 
 PAGE = """<!doctype html>
-<html lang="fr" data-theme="dark"><head><meta charset="utf-8">
+<html lang="fr" data-theme="light"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="same-origin">
-<title>{{TITLE}} · mdvault</title>
+<title>{{TITLE}} · {{VAULT}}</title>
 <script nonce="{{NONCE}}">{{HEADJS}}</script>
 <style>{{CSS}}{{PYG}}</style></head>
 <body class="{{BODYCLS}}">
 <div id="app">
 <aside id="side">
-  <div class="side-head"><a class="vault" href="{{BASE}}/" title="Espace « {{VAULTNAME}} »">{{SPICO}}<span class="vt">{{VAULT}}</span></a>
-    {{NEWBTN}}
-    <button class="ib" id="b-space" title="Options de l'espace">{{I_DOTS}}</button></div>
+  <div class="side-head"><a class="vault" href="/" title="Accueil de la base">{{LOGO}}<span class="vt">{{VAULT}}</span></a>
+    <button class="ib" id="b-new" title="Nouvelle note (Alt+N)">{{I_FILEPLUS}}</button>
+    <button class="ib" id="b-folder" title="Nouveau dossier">{{I_FOLDERPLUS}}</button>
+    <button class="ib" id="b-space" title="Options de la base">{{I_DOTS}}</button></div>
   <button class="searchbtn" id="b-switch">{{I_SEARCH}}<span>Rechercher…</span><kbd>Ctrl K</kbd></button>
   <nav class="side-nav">{{NAV}}</nav>
   <div class="side-scroll">
@@ -2279,9 +1900,8 @@ PAGE = """<!doctype html>
     {{TAGS}}
   </div>
   <div class="side-foot"><button class="ib" id="b-theme"></button><button class="ib" id="b-help" title="Raccourcis (?)">{{I_HELP}}</button>
-    <span class="sp"></span><span class="muted">{{USER}}</span>
-    <a class="ib" href="/account" title="Compte">{{I_USER}}</a>
-    <form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="{{CSRF}}"><button class="ib" title="Se déconnecter">{{I_LOGOUT}}</button></form></div>
+    <span class="sp"></span>
+    <form class="inline" method="post" action="/logout" id="f-lock"><input type="hidden" name="csrf" value="{{CSRF}}"><button class="ib" id="b-lock" title="Verrouiller la base">{{I_LOCK}}</button></form></div>
   <div class="resizer" title="Glisser pour redimensionner"></div>
 </aside>
 <div id="center">
@@ -2296,7 +1916,7 @@ PAGE = """<!doctype html>
 </body></html>"""
 
 AUTH_PAGE = """<!doctype html>
-<html lang="fr" data-theme="dark" class="authpage"><head><meta charset="utf-8">
+<html lang="fr" data-theme="light" class="authpage"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="referrer" content="same-origin"><meta name="robots" content="noindex,nofollow">
 <title>{{TITLE}} · mdvault</title>
@@ -2305,34 +1925,17 @@ AUTH_PAGE = """<!doctype html>
 <body><div class="auth-wrap"><div class="auth-card{{WIDE}}">{{BODY}}</div></div></body></html>"""
 
 MSGS = {
-    'out': ('ok', 'Vous êtes déconnecté.'),
+    'out': ('ok', 'Base verrouillée.'),
     'expired': ('err', 'Formulaire expiré : veuillez réessayer.'),
-    'deleted': ('ok', 'Compte supprimé.'),
-    'space-new': ('ok', 'Espace créé.'),
-    'space-del': ('ok', 'Espace supprimé définitivement.'),
-    'space-exists': ('err', 'Un espace porte déjà ce nom.'),
-    'space-bad': ('err', 'Nom d\'espace invalide : lettres, chiffres, « - » et « _ » (40 caractères max).'),
-    'space-max': ('err', 'Nombre maximal d\'espaces atteint (%d).' % MAX_SPACES),
-    'pw-ok': ('ok', 'Mot de passe modifié. Toutes les autres sessions ont été fermées.'),
-    'pw-bad': ('err', 'Mot de passe incorrect.'),
-    'pw-mismatch': ('err', 'Les deux nouveaux mots de passe ne correspondent pas.'),
-    'pw-weak': ('err', 'Mot de passe trop faible : au moins %d caractères, sans l\'identifiant, pas trop simple.' % PW_MIN),
-    'sess-ok': ('ok', 'Les autres sessions ont été fermées.'),
-    'confirm': ('err', 'La confirmation ne correspond pas.'),
-    'wait': ('err', 'Trop de tentatives : réessayez dans quelques minutes.'),
-    'signup-closed': ('err', 'Les inscriptions sont fermées.'),
-    'share-ok': ('ok', 'Partage enregistré.'),
-    'share-del': ('ok', 'Partage retiré.'),
-    'share-user': ('err', 'Utilisateur inconnu.'),
-    'share-self': ('err', 'Vous ne pouvez pas partager avec vous-même.'),
-    'share-space': ('err', 'Espace introuvable.'),
-    'share-note': ('err', 'Note introuvable dans cet espace.'),
-    'share-max': ('err', 'Nombre maximal de partages atteint (%d).' % MAX_SHARES),
 }
 
 
-def build_tree(notes):
+def build_tree(notes, dirs=()):
     root = {'d': {}, 'f': []}
+    for d in dirs:                       # dossiers, même vides
+        node = root
+        for part in d.split('/'):
+            node = node['d'].setdefault(part, {'d': {}, 'f': []})
     for rel in notes:
         node = root
         for part in rel.split('/')[:-1]:
@@ -2354,13 +1957,13 @@ def tree_html(vault, node, current, prefix=''):
             cur = ' current' if pr == current else ''
             out.append('<li class="dir"><details data-path="%s"%s><summary class="tree-row parent%s">%s'
                        '<a class="name" href="%s" title="%s">%s</a>'
-                       '<button class="ib add" data-folder="%s" title="Nouvelle sous-note">%s</button></summary>%s</details></li>'
+                       '<button class="ib add" data-folder="%s" data-parent="1" title="Nouvelle sous-note">%s</button></summary>%s</details></li>'
                        % (esc(path), ' open' if op or cur else '', cur, icon('chev', 'chev'), esc(vault.url(pr)), esc(pr),
                           esc(name), esc(path), icon('plus'), tree_html(vault, node['d'][name], current, path + '/')))
             continue
-        out.append('<li class="dir"><details data-path="%s"%s><summary class="tree-row">%s<span class="name">%s</span>'
+        out.append('<li class="dir"><details data-path="%s"%s><summary class="tree-row folder">%s%s<span class="name">%s</span>'
                    '<button class="ib add" data-folder="%s" title="Nouvelle note dans ce dossier">%s</button></summary>%s</details></li>'
-                   % (esc(path), op, icon('chev', 'chev'), esc(name), esc(path), icon('plus'),
+                   % (esc(path), op, icon('chev', 'chev'), icon('folder', 'i fi'), esc(name), esc(path), icon('plus'),
                       tree_html(vault, node['d'][name], current, path + '/')))
     for rel in sorted(node['f'], key=str.lower):
         if rel in used:
@@ -2374,14 +1977,6 @@ def tree_html(vault, node, current, prefix=''):
 
 def fmt_time(ns):
     return time.strftime('%d/%m/%Y %H:%M', time.localtime(ns / 1e9))
-
-
-def count_notes(p):
-    n = 0
-    for dp, dn, fn in os.walk(p):
-        dn[:] = [d for d in dn if not d.startswith('.')]
-        n += sum(1 for f in fn if is_note(f) and not f.startswith('.'))
-    return n
 
 
 def safe_next(v):
@@ -2402,9 +1997,10 @@ def page_csp(nonce):
 # --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
-    store = None
+    base = None        # Base : mot de passe + sessions
+    vault = None       # Vault : notes de la base
     limiter = None
-    cfg = {'secure': False, 'signup': False, 'proxy': False, 'hosts': set()}
+    cfg = {'secure': False, 'proxy': False, 'hosts': set()}
     server_version = 'mdvault'
     sys_version = ''
     timeout = 30
@@ -2490,10 +2086,10 @@ class Handler(BaseHTTPRequestHandler):
                 % (name, val, age, '; Secure' if self.cfg['secure'] else ''))
 
     def load_auth(self):
-        self.skey = self.sess = self.user = None
+        self.skey = self.sess = None
         tok = self.cookies().get(self.cn())
         if tok:
-            self.skey, self.sess, self.user = self.store.session(tok)
+            self.skey, self.sess = self.base.session(tok)
 
     def safe(self, rel, note=False):
         if not isinstance(rel, str) or not rel or '\x00' in rel or len(rel) > 1024:
@@ -2505,8 +2101,6 @@ class Handler(BaseHTTPRequestHandler):
         if p == root or root not in p.parents:
             return None
         if note and not is_note(p.name):
-            return None
-        if self.vault.only and not self.vault.allowed(p.relative_to(root).as_posix()):
             return None
         return p
 
@@ -2520,18 +2114,9 @@ class Handler(BaseHTTPRequestHandler):
     def auth_page(self, title, body, code=200, headers=None, wide=False):
         nonce = secrets.token_urlsafe(16)
         vals = {'TITLE': esc(title), 'HEADJS': HEAD_JS, 'CSS': CSS, 'NONCE': nonce, 'BODY': body,
-                'WIDE': ' auth-wide' if wide else ''}
+                'WIDE': ''}
         self.send(re.sub(r'\{\{(\w+)\}\}', lambda m: vals[m.group(1)], AUTH_PAGE), code=code, headers=headers,
                   csp=page_csp(nonce))
-
-    def topbar(self):
-        return ('<div class="topbar"><a class="brand" href="/">%s mdvault</a><span class="sp"></span>'
-                '<span class="who">%s</span><a class="btn" href="/">%s Espaces</a><a class="btn" href="/shares">%s Partages</a>'
-                '<a class="btn" href="/account">%s Compte</a>'
-                '<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="%s">'
-                '<button class="btn">%s Déconnexion</button></form></div>'
-                % (LOGO, esc(self.user['name']), icon('spaces'), icon('share'), icon('user'), esc(self.sess['csrf']),
-                   icon('logout')))
 
     def page(self, title, main, right='', current=None, idx=None, mainattr='', crumbs=None,
              actions='', nav_on=''):
@@ -2549,33 +2134,24 @@ class Handler(BaseHTTPRequestHandler):
                     '<div class="tags-box">%s</div></details>') % (len(counts), ''.join(
                         '<a class="tag" href="%s/search?q=%s">#%s<span class="n">%d</span></a>'
                         % (v.base, urllib.parse.quote('#' + t), esc(t), c) for t, c in top))
-        links = [('home', v.base + '/', 'home', 'Accueil'), ('search', v.base + '/search', 'search', 'Recherche')]
-        links.append(('spaces', '/', 'spaces', 'Espaces'))
+        links = [('home', '/', 'home', 'Accueil'), ('search', '/search', 'search', 'Recherche')]
         nav = ''.join('<a href="%s"%s>%s%s</a>' % (esc(href), ' class="on"' if key == nav_on else '', icon(ic), lab)
                       for key, href, ic, lab in links)
-        mdv = {'csrf': self.sess['csrf'], 'base': v.base, 'icons': ICONS, 'notes': [[r, stem(r)] for r in idx.notes],
-               'ro': v.ro, 'single': bool(v.only), 'owner': not v.shared_by, 'space': v.space,
-               'user': self.user['name']}
-        label = esc(v.name)
-        if v.shared_by:
-            label += '<small>%s par %s · %s</small>' % ('note partagée' if v.only else 'partagé', esc(v.shared_by),
-                                                      'lecture seule' if v.ro else 'lecture et écriture')
+        mdv = {'csrf': self.sess['csrf'], 'base': v.base, 'icons': ICONS, 'notes': [[r, stem(r)] for r in idx.notes]}
         nonce = secrets.token_urlsafe(16)
         vals = {
             'TITLE': esc(title), 'CSS': CSS, 'PYG': PYG_CSS, 'JS': JS, 'HEADJS': HEAD_JS, 'NONCE': nonce,
             'MDVJSON': json.dumps(mdv, ensure_ascii=False).replace('<', '\\u003c').replace('>', '\\u003e'),
-            'VAULT': label, 'VAULTNAME': esc(v.name), 'BASE': v.base, 'USER': esc(self.user['name']), 'CSRF': esc(self.sess['csrf']),
-            'COUNT': str(len(idx.notes)), 'NAV': nav,
-            'TREE': tree_html(v, build_tree(idx.notes), current) if idx.notes else
+            'VAULT': esc(v.name), 'CSRF': esc(self.sess['csrf']), 'LOGO': LOGO,
+            'COUNT': str(len(idx.notes)), 'NAV': nav, 'I_FOLDERPLUS': icon('folderplus'),
+            'TREE': tree_html(v, build_tree(idx.notes, idx.dirs), current) if idx.notes or idx.dirs else
                     '<p class="panel empty" style="padding:4px 8px">Aucune note pour l\'instant.</p>',
             'TAGS': tags, 'MAIN': main, 'RIGHT': right, 'MAINATTR': mainattr,
-            'BODYCLS': ('' if right else 'noright') + ('' if v.can_create else ' ro'),
-            'NEWBTN': ('<button class="ib" id="b-new" title="Nouvelle note (Alt+N)">%s</button>' % icon('fileplus'))
-                      if v.can_create else '',
+            'BODYCLS': '' if right else 'noright',
             'CRUMBS': crumbs if crumbs is not None else '<b>%s</b>' % esc(title),
             'ACTIONS': actions,
-            'I_FILEPLUS': icon('fileplus'), 'I_DOTS': icon('dots'), 'SPICO': sp_ico(v.name), 'I_SEARCH': icon('search'),
-            'I_HELP': icon('help'), 'I_SIDE': icon('side'), 'I_USER': icon('user'), 'I_LOGOUT': icon('logout'),
+            'I_FILEPLUS': icon('fileplus'), 'I_DOTS': icon('dots'), 'I_SEARCH': icon('search'),
+            'I_HELP': icon('help'), 'I_SIDE': icon('side'), 'I_LOCK': icon('lock'),
         }
         return re.sub(r'\{\{(\w+)\}\}', lambda m: vals[m.group(1)], PAGE), nonce
 
@@ -2620,306 +2196,50 @@ class Handler(BaseHTTPRequestHandler):
             return self.send('User-agent: *\nDisallow: /\n', 'text/plain; charset=utf-8')
         self.load_auth()
         if path == '/login':
-            return self.redirect('/') if self.user else self.login_page(qv('m'), safe_next(qv('next')))
-        if path == '/signup':
-            if self.user:
-                return self.redirect('/')
-            if not self.cfg['signup']:
-                return self.redirect('/login?m=signup-closed')
-            return self.signup_page()
-        if not self.user:
-            if path == '/api/csrf' or '/api/' in path:
-                return self.send_json({'error': 'non connecté', 'code': 'auth'}, 401)
+            return self.redirect('/') if self.sess else self.login_page(qv('m'), safe_next(qv('next')))
+        if not self.sess:
+            if path.startswith('/api/'):
+                return self.send_json({'error': 'base verrouillée', 'code': 'auth'}, 401)
             nxt = self.path if path != '/' else ''
             return self.redirect('/login' + ('?next=' + urllib.parse.quote(nxt, safe='') if nxt else ''))
         if path == '/':
-            return self.spaces_page(qv('m'))
-        if path == '/account':
-            return self.account_page(qv('m'))
+            return self.home()
+        if path.startswith('/note/'):
+            return self.note(path[len('/note/'):])
+        if path == '/search':
+            return self.search_page(qv('q')[:500])
         if path == '/api/csrf':
             return self.send_json({'csrf': self.sess['csrf']})
-        if path == '/shares':
-            return self.shares_page(qv('m'), qv('space'), qv('note'))
-        if path == '/api/shares':
-            return self.japi_shares(qv('space'), qv('note'))
-        m = re.match(r'^/([sp])/([^/]+)(/.*)?$', path)
-        if m:
-            v = self.get_vault(m.group(1), m.group(2))
-            if v is None:
-                return self.auth_page('Introuvable', self.topbar() + '<h1 class="auth-h">Espace introuvable</h1>',
-                                      code=404, wide=True)
-            self.vault = v
-            sub = m.group(3)
-            if not sub:
-                return self.redirect(v.base + '/')
-            if sub == '/':
-                return self.home()
-            if sub.startswith('/note/'):
-                return self.note(sub[len('/note/'):])
-            if sub == '/search':
-                return self.search_page(qv('q')[:500])
-            if sub == '/api/peek':
-                return self.api_peek(qv('path'))
-            if sub == '/api/search':
-                return self.api_search(qv('q')[:500])
-            return self.send_page('Introuvable', '<div class="content"><h1 class="page-title">Page introuvable</h1></div>',
-                                  code=404)
-        return self.auth_page('Introuvable', self.topbar() + '<h1 class="auth-h">Page introuvable</h1>', code=404, wide=True)
-
-    def get_vault(self, kind, key):
-        if kind == 's':
-            return self.store.vault(self.user, key)
-        return self.store.shared_vault(self.user, key)
+        if path == '/api/peek':
+            return self.api_peek(qv('path'))
+        if path == '/api/search':
+            return self.api_search(qv('q')[:500])
+        return self.send_page('Introuvable', '<div class="content"><h1 class="page-title">Page introuvable</h1></div>',
+                              code=404)
 
     # --- pages publiques ---
     def pre_token(self):
         t = self.cookies().get(self.cn(pre=True), '')
         return t if re.fullmatch(r'[\w-]{32,64}', t) else secrets.token_urlsafe(32)
 
-    def login_page(self, msg='', nxt='', err='', name='', code=200):
+    def login_page(self, msg='', nxt='', err='', code=200):
         pre = self.pre_token()
-        signup = ('<div class="auth-foot">Pas encore de compte ? <a href="/signup">Créer un compte</a></div>'
-                  if self.cfg['signup'] else '')
-        body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">Bon retour 👋</h1>'
-                '<p class="auth-sub">Connectez-vous pour retrouver vos notes.</p>%s%s'
+        name = esc(self.vault.name)
+        body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">%s</h1>'
+                '<p class="auth-sub">Cette base est protégée. Saisissez son mot de passe.</p>%s%s'
                 '<form method="post" action="/login"><input type="hidden" name="pre" value="%s">'
                 '<input type="hidden" name="next" value="%s">'
-                '<label class="lbl">Identifiant<input class="field" name="username" autocomplete="username" '
-                'autocapitalize="none" spellcheck="false" required maxlength="32" value="%s"%s></label>'
+                '<input type="text" name="username" value="%s" autocomplete="username" hidden>'
                 '<label class="lbl">Mot de passe<input class="field" type="password" name="password" '
-                'autocomplete="current-password" required maxlength="%d"%s></label>'
-                '<div class="btns"><button class="btn primary wide">Se connecter</button></div></form>%s'
-                % (LOGO, self.alert(msg), '<div class="alert err" role="alert">%s</div>' % esc(err) if err else '',
-                   pre, esc(nxt), esc(name), '' if name else ' autofocus', PW_MAX, ' autofocus' if name else '', signup))
-        self.auth_page('Connexion', body, code=code, headers=[self.cookie(self.cn(pre=True), pre, 3600)])
+                'autocomplete="current-password" required maxlength="%d" autofocus></label>'
+                '<div class="btns"><button class="btn primary wide">%s Déverrouiller</button></div></form>'
+                % (LOGO, name, self.alert(msg), '<div class="alert err" role="alert">%s</div>' % esc(err) if err else '',
+                   pre, esc(nxt), name, PW_MAX, icon('lock')))
+        self.auth_page('Déverrouiller', body, code=code, headers=[self.cookie(self.cn(pre=True), pre, 3600)])
 
-    def signup_page(self, err='', name='', code=200):
-        pre = self.pre_token()
-        body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">Créer un compte</h1>'
-                '<p class="auth-sub">Vos notes, privées par défaut, partageables quand vous le voulez.</p>%s'
-                '<form method="post" action="/signup"><input type="hidden" name="pre" value="%s">'
-                '<label class="lbl">Identifiant (3 à 32 caractères : a-z, 0-9, . _ -)<input class="field" name="username" '
-                'autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="32" '
-                'pattern="[a-z0-9][a-z0-9_.\\-]{2,31}" value="%s" autofocus></label>'
-                '<label class="lbl">Mot de passe (%d caractères minimum)<input class="field" type="password" name="password" '
-                'autocomplete="new-password" required minlength="%d" maxlength="%d"></label>'
-                '<label class="lbl">Confirmer le mot de passe<input class="field" type="password" name="password2" '
-                'autocomplete="new-password" required minlength="%d" maxlength="%d"></label>'
-                '<div class="btns"><button class="btn primary wide">Créer le compte</button></div></form>'
-                '<div class="auth-foot">Déjà inscrit ? <a href="/login">Se connecter</a></div>'
-                % (LOGO, '<div class="alert err" role="alert">%s</div>' % esc(err) if err else '', pre, esc(name),
-                   PW_MIN, PW_MIN, PW_MAX, PW_MIN, PW_MAX))
-        self.auth_page('Inscription', body, code=code, headers=[self.cookie(self.cn(pre=True), pre, 3600)])
-
-    # --- pages du compte ---
-    def spaces_page(self, msg=''):
-        spaces = self.store.list_spaces(self.user)
-        cards = ''.join('<a class="card space-card" href="/s/%s/">%s<b>%s</b><p>%d note(s)</p></a>'
-                        % (esc(s), sp_ico(s, True), esc(s), count_notes(self.store.user_dir(self.user) / s)) for s in spaces)
-        quota = ''
-        if self.store.quota:
-            quota = ' · %.1f / %d Mo utilisés' % (self.store.usage(self.user) / 1048576, self.store.quota // 1048576)
-        names = {u['id']: n for n, u in self.store.users().items()}
-        shared = sorted(((sid, s) for sid, s in self.store.shares().items() if s['to'] == self.user['id']
-                         and s['owner'] in names), key=lambda x: (names[x[1]['owner']], x[1]['space'], x[1]['note'] or ''))
-        if not cards:
-            cards = '<p class="lead">Aucun espace : créez-en un ci-dessous.</p>'
-        if shared:
-            cards += '</div><h2 class="h3" style="margin-top:30px">Partagés avec moi</h2><div class="cards">' + ''.join(
-                '<a class="card space-card" href="/p/%s/">%s<b>%s</b><p>%s par %s</p><span class="tag-s">%s</span></a>'
-                % (esc(sid), sp_ico(stem(s['note']) if s['note'] else s['space'], True),
-                   esc(stem(s['note']) if s['note'] else s['space']), 'Note partagée' if s['note'] else 'Espace partagé',
-                   esc(names[s['owner']]), 'Peut modifier' if s['role'] == 'w' else 'Peut lire')
-                for sid, s in shared)
-        body = (self.topbar() + '<h1 class="auth-h">Bonjour %s</h1><p class="lead">Chaque espace est un dossier de notes '
-                'privé, que vous pouvez partager quand vous le souhaitez%s.</p>%s<div class="cards">%s</div>'
-                '<div class="box"><h2>Nouvel espace</h2><form method="post" action="/spaces/new" class="row">'
-                '<input type="hidden" name="csrf" value="%s"><input class="field" name="name" required maxlength="40" '
-                'placeholder="ex. travail, perso, cours" autocomplete="off" spellcheck="false">'
-                '<button class="btn primary">%s Créer</button></form></div>'
-                % (esc(self.user['name']), quota, self.alert(msg), cards,
-                   esc(self.sess['csrf']), icon('plus')))
-        self.auth_page('Espaces', body, wide=True)
-
-    def account_page(self, msg=''):
-        csrf = esc(self.sess['csrf'])
-        name = esc(self.user['name'])
-        spaces = self.store.list_spaces(self.user)
-        n = self.store.count_sessions(self.user['name'])
-        opts = ''.join('<option value="%s">%s</option>' % (esc(s), esc(s)) for s in spaces)
-        hid = '<input type="hidden" name="csrf" value="%s">' % csrf
-        body = (self.topbar() + '<h1 class="auth-h">Compte « %s »</h1>%s' % (name, self.alert(msg)) +
-                '<div class="box"><h2>Changer de mot de passe</h2><p>Toutes vos autres sessions seront fermées.</p>'
-                '<form method="post" action="/account/password">' + hid +
-                '<input type="text" name="username" value="%s" autocomplete="username" hidden>' % name +
-                '<label class="lbl">Mot de passe actuel<input class="field" type="password" name="current" '
-                'autocomplete="current-password" required maxlength="%d"></label>' % PW_MAX +
-                '<label class="lbl">Nouveau mot de passe (%d caractères minimum)<input class="field" type="password" '
-                'name="password" autocomplete="new-password" required minlength="%d" maxlength="%d"></label>'
-                % (PW_MIN, PW_MIN, PW_MAX) +
-                '<label class="lbl">Confirmer<input class="field" type="password" name="password2" '
-                'autocomplete="new-password" required minlength="%d" maxlength="%d"></label>' % (PW_MIN, PW_MAX) +
-                '<div class="btns"><button class="btn primary">Changer le mot de passe</button></div></form></div>'
-                '<div class="box"><h2>Sessions</h2><p>%d session(s) active(s), y compris celle-ci.</p>' % n +
-                '<form method="post" action="/logout-all">' + hid +
-                '<div class="btns"><button class="btn">Déconnecter les autres sessions</button></div></form></div>' +
-                ('<div class="box danger"><h2>Supprimer un espace</h2><p>Toutes les notes de l\'espace seront '
-                 'effacées définitivement.</p><form method="post" action="/spaces/delete">' + hid +
-                 '<label class="lbl">Espace<select class="field" name="space" required>%s</select></label>' % opts +
-                 '<label class="lbl">Mot de passe<input class="field" type="password" name="password" '
-                 'autocomplete="current-password" required maxlength="%d"></label>' % PW_MAX +
-                 '<div class="btns"><button class="btn danger">Supprimer l\'espace</button></div></form></div>'
-                 if spaces else '') +
-                '<div class="box danger"><h2>Supprimer le compte</h2><p>Le compte et tous ses espaces seront '
-                'effacés définitivement.</p><form method="post" action="/account/delete">' + hid +
-                '<label class="lbl">Retapez votre identifiant<input class="field" name="confirm" required '
-                'autocomplete="off" spellcheck="false" maxlength="32"></label>'
-                '<label class="lbl">Mot de passe<input class="field" type="password" name="password" '
-                'autocomplete="current-password" required maxlength="%d"></label>' % PW_MAX +
-                '<div class="btns"><button class="btn danger">Supprimer mon compte</button></div></form></div>')
-        self.auth_page('Compte', body, wide=True)
-
-    def shares_page(self, msg='', space='', note=''):
-        st, uid = self.store, self.user['id']
-        csrf = esc(self.sess['csrf'])
-        hid = '<input type="hidden" name="csrf" value="%s">' % csrf
-        names = {u['id']: n for n, u in st.users().items()}
-        spaces = st.list_spaces(self.user)
-        allsh = st.shares()
-        role = lambda s: '<span class="badge%s">%s</span>' % (' w' if s['role'] == 'w' else '',
-                                                              'lecture et écriture' if s['role'] == 'w' else 'lecture seule')
-        what = lambda s: ('%s %s' % (icon('file'), esc(s['note'])) if s['note'] else
-                          '%s Espace « %s »' % (icon('spaces'), esc(s['space'])))
-
-        def rows(items, mine):
-            out = ''
-            for sid, s in items:
-                who = names.get(s['to'] if mine else s['owner'], '?')
-                out += ('<div class="srow">%s<div class="sinfo"><b>%s</b> %s<small>%s%s %s</small></div>%s'
-                        '<form method="post" action="/shares/delete">%s<input type="hidden" name="id" value="%s">'
-                        '<button class="btn">%s</button></form></div>'
-                        % (avatar(who), what(s), role(s), 'dans l\'espace %s · ' % esc(s['space']) if s['note'] else '',
-                           'avec' if mine else 'de', esc(who),
-                           '' if mine else '<a class="btn primary" href="/p/%s/">Ouvrir</a>' % esc(sid),
-                           hid, esc(sid), 'Révoquer' if mine else 'Retirer'))
-            return out
-        mine = sorted(((k, v) for k, v in allsh.items() if v['owner'] == uid),
-                      key=lambda x: (x[1]['space'], x[1]['note'] or '', names.get(x[1]['to'], '')))
-        tome = sorted(((k, v) for k, v in allsh.items() if v['to'] == uid and v['owner'] in names),
-                      key=lambda x: (names[x[1]['owner']], x[1]['space'], x[1]['note'] or ''))
-        opts = ''.join('<option value="%s"%s>%s</option>' % (esc(s), ' selected' if s == space else '', esc(s))
-                       for s in spaces)
-        body = (self.topbar() + '<h1 class="auth-h">Partages</h1><p class="lead">Partagez un espace entier ou une seule '
-                'note avec un autre utilisateur, en lecture seule ou en lecture et écriture.</p>' + self.alert(msg) +
-                ('<div class="box"><h2>Nouveau partage</h2><form method="post" action="/shares/new">' + hid +
-                 '<div class="row"><label class="lbl">Espace<select class="field" name="space" required>%s</select></label>'
-                 '<label class="lbl">Note (vide = tout l\'espace)<input class="field" name="note" value="%s" maxlength="512" '
-                 'placeholder="dossier/note.md" spellcheck="false" autocomplete="off"></label></div>'
-                 '<div class="row"><label class="lbl">Avec l\'utilisateur<input class="field" name="to" required maxlength="32" '
-                 'autocapitalize="none" spellcheck="false" autocomplete="off"%s></label>'
-                 '<label class="lbl">Droits<select class="field" name="role"><option value="r">Lecture seule</option>'
-                 '<option value="w">Lecture et écriture</option></select></label></div>'
-                 '<div class="btns"><button class="btn primary">%s Partager</button></div></form></div>'
-                 % (opts, esc(note), ' autofocus' if space else '', icon('share')) if spaces else '') +
-                '<div class="box"><h2>Mes partages</h2>%s</div>' % (rows(mine, True) or '<p>Aucun partage.</p>') +
-                '<div class="box"><h2>Partagés avec moi</h2>%s</div>' % (rows(tome, False) or '<p>Rien pour l\'instant.</p>'))
-        self.auth_page('Partages', body, wide=True)
-
-    def share_note(self, space, note):
-        """Chemin normalisé d'une note de l'espace, None (espace entier) ou False (invalide)."""
-        note = (note or '').strip().replace('\\', '/').strip('/') if isinstance(note, str) else ''
-        if not note:
-            return None
-        if not is_note(note):
-            note += '.md'
-        root = (self.store.user_dir(self.user) / space).resolve()
-        p = (root / note).resolve()
-        if (len(note) > 512 or '\x00' in note or any(x.startswith('.') for x in note.split('/'))
-                or root not in p.parents or not p.is_file()):
-            return False
-        return p.relative_to(root).as_posix()
-
-    def create_share(self, space, note, to_name, role):
-        st = self.store
-        if not isinstance(space, str) or space not in st.list_spaces(self.user):
-            return 'share-space', None
-        note = self.share_note(space, note)
-        if note is False:
-            return 'share-note', None
-        to = st.get((to_name or '').strip().lower()[:64] if isinstance(to_name, str) else '')
-        if not to:
-            return 'share-user', note
-        if to['id'] == self.user['id']:
-            return 'share-self', note
-        mine = [v for v in st.shares().values() if v['owner'] == self.user['id']]
-        exists = any((v['space'], v['note'], v['to']) == (space, note, to['id']) for v in mine)
-        if len(mine) >= MAX_SHARES and not exists:
-            return 'share-max', note
-        st.add_share(self.user, space, note, to, 'w' if role == 'w' else 'r')
-        self.log_auth('partage %s/%s%s -> %s (%s)' % (self.user['name'], space, '/' + note if note else '', to['name'], role))
-        return None, note
-
-    def remove_share(self, sid):
-        uid = self.user['id']
-        sh = self.store.get_share(sid)
-        if sh and uid in (sh['owner'], sh['to']):
-            self.store.purge_shares(lambda s, sh=sh: s == sh)
-            return True
-        return False
-
-    def do_share_new(self, form):
-        space = form.get('space') or ''
-        err, note = self.create_share(space, form.get('note'), form.get('to'), form.get('role'))
-        if err:
-            return self.redirect('/shares?m=%s&space=%s&note=%s' % (err, urllib.parse.quote(space),
-                                                                   urllib.parse.quote(note or '')))
-        self.redirect('/shares?m=share-ok')
-
-    def do_share_delete(self, form):
-        self.remove_share(form.get('id') or '')
-        self.redirect('/shares?m=share-del')
-
-    def target_shares(self, space, note):
-        """Personnes ayant accès à un espace ou une note (directement ou via un parent)."""
-        names = {u['id']: n for n, u in self.store.users().items()}
-        direct, inherited = [], []
-        for sid, s in self.store.shares().items():
-            if s['owner'] != self.user['id'] or s['space'] != space or s['to'] not in names:
-                continue
-            row = {'to': names[s['to']], 'role': s['role']}
-            if s['note'] == note:
-                direct.append(dict(row, id=sid, since=time.strftime('%d/%m/%Y', time.localtime(s.get('created', 0)))))
-            elif note and s['note'] is None:
-                inherited.append(dict(row, via='Accès via l\'espace « %s »' % space))
-            elif note and s['note'] and note.startswith(child_dir(s['note']) + '/'):
-                inherited.append(dict(row, via='Accès via « %s »' % stem(s['note'])))
-        key = lambda r: r['to']
-        return {'shares': sorted(direct, key=key), 'inherited': sorted(inherited, key=key)}
-
-    def japi_shares(self, space, note):
-        if space not in self.store.list_spaces(self.user):
-            return self.send_json({'error': 'espace introuvable'}, 404)
-        note = self.share_note(space, note)
-        if note is False:
-            return self.send_json({'error': 'note introuvable'}, 404)
-        self.send_json(self.target_shares(space, note))
-
-    def japi_share_new(self, d):
-        err, note = self.create_share(d.get('space'), d.get('note'), d.get('to'), d.get('role'))
-        if err:
-            return self.send_json({'error': MSGS[err][1]}, 400)
-        self.send_json(self.target_shares(d.get('space'), note))
-
-    def japi_share_delete(self, d):
-        if not self.remove_share(d.get('id') if isinstance(d.get('id'), str) else ''):
-            return self.send_json({'error': 'partage introuvable'}, 404)
-        self.send_json({'ok': True})
-
-    # --- pages d'un espace ---
+    # --- pages de la base ---
     def home(self):
         v = self.vault
-        if v.only:
-            return self.redirect(v.url(v.only))
         idx = v.index()
         for name in ('index', 'readme', 'home', 'accueil'):
             for rel in idx.notes:
@@ -2934,10 +2254,10 @@ class Handler(BaseHTTPRequestHandler):
                 '<div class="quick"><button class="btn primary" id="q-new">%s Nouvelle note</button>'
                 '<button class="btn" id="q-search">%s Rechercher <kbd>Ctrl K</kbd></button></div>'
                 '%s<p class="lead" style="margin-top:28px;font-size:13px">Astuce : créez une note <code>index</code> '
-                'à la racine pour en faire la page d\'accueil de cet espace.</p></div>'
+                'à la racine pour en faire la page d\'accueil de la base.</p></div>'
                 % (esc(v.name), len(idx.notes), icon('fileplus'), icon('search'),
                    ('<div class="h3">Modifiées récemment</div><div class="cards">%s</div>' % cards) if cards else
-                   '<p>Cet espace ne contient encore aucune note.</p>'))
+                   '<p>Cette base ne contient encore aucune note.</p>'))
         self.send_page('Accueil', main, idx=idx, nav_on='home')
 
     def backlink_ctx(self, idx, src, target):
@@ -2990,7 +2310,7 @@ class Handler(BaseHTTPRequestHandler):
 
         idx = v.index()
         info = v.info(rel)
-        body_html = render(v, idx, rel, info['body'], interactive=not v.ro)
+        body_html = render(v, idx, rel, info['body'], interactive=True)
         title = stem(rel)
         folders = rel.split('/')[:-1]
         crumbs = ''
@@ -3000,13 +2320,13 @@ class Handler(BaseHTTPRequestHandler):
                 '<span class="sep">/</span>'
         crumbs += \
             '<b>%s</b><span class="dot" title="Modifications non enregistrées"></span>' % esc(title)
-        actions = ('<span class="badge">lecture seule</span>' if v.ro else '') + (
+        actions = (
                    '<div class="seg"%s><button id="m-read" class="on" title="Lecture (Ctrl+E)">%s<span>Lecture</span></button>'
                    '<button id="m-edit" title="Édition (Ctrl+E)">%s<span>Édition</span></button></div>'
                    '<button class="ib" id="b-prev" title="Aperçu côte à côte" hidden>%s</button>'
                    '<button class="ib" id="b-more" title="Plus d\'actions">%s</button>'
                    '<button class="ib" id="b-right" title="Panneau de droite">%s</button>'
-                   % (' hidden' if v.ro else '', icon('eye'), icon('pencil'), icon('cols'), icon('dots'), icon('rside')))
+                   % ('', icon('eye'), icon('pencil'), icon('cols'), icon('dots'), icon('rside')))
         tags_meta = ''.join('<a class="tag" href="%s/search?q=%s">#%s</a>' % (v.base, urllib.parse.quote('#' + t), esc(t))
                             for t in sorted(front_tags(info['meta'])))
         fm = ('<details class="fm"><summary>Propriétés</summary><pre>%s</pre></details>'
@@ -3021,7 +2341,7 @@ class Handler(BaseHTTPRequestHandler):
             '<div id="preview" class="md"></div></div>'
             '<div class="edfoot"><span id="status" class="status">Sauvegarde automatique</span><span class="sp"></span>'
             '<span id="pos"></span><span id="wc"></span><span><kbd>?</kbd> raccourcis</span></div></div>'
-        ) % (' contenteditable="plaintext-only" spellcheck="false" title="Cliquer pour renommer"' if v.can_create else '',
+        ) % (' contenteditable="plaintext-only" spellcheck="false" title="Cliquer pour renommer"',
              esc(title), fmt_time(info['mtime']), tags_meta, fm, body_html, self.subpages(idx, rel), esc(read_raw(p)))
 
         back = sorted((n for n in idx.notes if n != rel and rel in idx.out_links(v, n)), key=str.lower)
@@ -3048,7 +2368,7 @@ class Handler(BaseHTTPRequestHandler):
         v = self.vault
         kids = sorted(descendants(idx.notes, rel, direct=True), key=lambda r: stem(r).lower())
         add = ('<button class="btn ghost" id="b-child">%s Ajouter une sous-note</button>' % icon('plus')
-               if v.can_create else '')
+               )
         if not kids:
             return '<div class="subpages" style="border:0;margin-top:1.6em;padding:0">%s</div>' % add if add else ''
         items = ''.join('<a class="subitem" href="%s">%s<span>%s</span>%s</a>'
@@ -3098,7 +2418,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get('Content-Length') or 0)
         except ValueError:
             n = -1
-        is_api = path.startswith(('/s/', '/p/'))
+        is_api = path.startswith('/api/')
         if n < 0 or n > (MAX_BODY if is_api else MAX_FORM):
             self.close_connection = True
             return self.send_json({'error': 'requête trop volumineuse ou invalide'}, 413)
@@ -3106,7 +2426,7 @@ class Handler(BaseHTTPRequestHandler):
         ctype = (self.headers.get('Content-Type') or '').split(';')[0].strip().lower()
         self.load_auth()
 
-        if not is_api and not path.startswith('/api/'):
+        if not is_api:
             if ctype != 'application/x-www-form-urlencoded':
                 return self.send_json({'error': 'type de contenu refusé'}, 415)
             try:
@@ -3116,59 +2436,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json({'error': 'formulaire invalide'}, 400)
             if path == '/login':
                 return self.do_login(form)
-            if path == '/signup':
-                return self.do_signup(form)
-            if not self.user:
-                return self.redirect('/login')
-            back = ('/account' if path.startswith('/account') or path in ('/logout-all', '/spaces/delete') else
-                    '/shares' if path.startswith('/shares') else '/')
-            if not ct_eq(form.get('csrf'), self.sess['csrf']):
-                return self.redirect(back + '?m=expired')
-            fn = {'/logout': self.do_logout, '/logout-all': self.do_logout_all, '/spaces/new': self.do_space_new,
-                  '/spaces/delete': self.do_space_delete, '/account/password': self.do_password,
-                  '/account/delete': self.do_account_delete, '/shares/new': self.do_share_new,
-                  '/shares/delete': self.do_share_delete}.get(path)
-            if not fn:
-                return self.send_json({'error': 'route inconnue'}, 404)
-            return fn(form)
+            if path == '/logout' and self.sess and ct_eq(form.get('csrf'), self.sess['csrf']):
+                return self.do_logout()
+            return self.redirect('/login' if not self.sess else '/')
 
-        if not self.user:
-            return self.send_json({'error': 'session expirée', 'code': 'auth'}, 401)
+        if not self.sess:
+            return self.send_json({'error': 'base verrouillée', 'code': 'auth'}, 401)
         if not ct_eq(self.headers.get('X-CSRF'), self.sess['csrf']):
             return self.send_json({'error': 'jeton CSRF invalide', 'code': 'csrf'}, 403)
         if ctype != 'application/json':
             return self.send_json({'error': 'type de contenu refusé'}, 415)
-        if path.startswith('/api/'):
-            try:
-                data = json.loads(raw or b'{}')
-            except ValueError:
-                data = None
-            if not isinstance(data, dict):
-                return self.send_json({'error': 'JSON invalide'}, 400)
-            fn = {'/api/shares/new': self.japi_share_new, '/api/shares/delete': self.japi_share_delete}.get(path)
-            return fn(data) if fn else self.send_json({'error': 'route inconnue'}, 404)
-        m = re.match(r'^/([sp])/([^/]+)/api/(\w+)$', path)
-        v = self.get_vault(m.group(1), m.group(2)) if m else None
-        if v is None:
-            return self.send_json({'error': 'route inconnue'}, 404)
-        self.vault = v
         try:
             data = json.loads(raw or b'{}')
         except ValueError:
-            return self.send_json({'error': 'JSON invalide'}, 400)
+            data = None
         if not isinstance(data, dict):
             return self.send_json({'error': 'JSON invalide'}, 400)
-        name = m.group(3)
+        name = path[len('/api/'):]
         if name == 'preview':
             return self.api_preview(data)
-        if v.ro or (name in ('new', 'rename', 'delete') and not v.can_create):
-            return self.send_json({'error': 'action non autorisée (partage en lecture seule)' if v.ro else
-                                   'action non autorisée sur une note partagée'}, 403)
         fn = {'save': self.api_save, 'new': self.api_new, 'rename': self.api_rename, 'delete': self.api_delete,
-              'toggle': self.api_toggle}.get(name)
+              'toggle': self.api_toggle, 'mkdir': self.api_mkdir, 'rendir': self.api_rendir,
+              'rmdir': self.api_rmdir}.get(name)
         if not fn:
             return self.send_json({'error': 'route inconnue'}, 404)
-        with v.lock:
+        with self.vault.lock:
             fn(data)
 
     # --- authentification ---
@@ -3176,132 +2468,32 @@ class Handler(BaseHTTPRequestHandler):
         c = self.cookies().get(self.cn(pre=True), '')
         return bool(c) and ct_eq(c, form.get('pre'))
 
-    def verify(self, user, pw):
-        with HASH_SEM:
-            ok = verify_password(pw or '', user['hash'] if user else self.store.dummy)
-        return ok and user is not None
-
     def do_login(self, form):
-        name = (form.get('username') or '').strip().lower()[:64]
         pw = (form.get('password') or '')[:PW_MAX]
         nxt = safe_next(form.get('next'))
         if not self.check_pre(form):
             return self.redirect('/login?m=expired')
         ip = self.client_ip()
-        wait = self.limiter.wait(ip, name)
+        wait = self.limiter.wait(ip)
         if wait:
-            self.log_auth('connexion bloquée (%s)' % name)
-            return self.login_page(nxt=nxt, name=name, code=429,
+            self.log_auth('tentative bloquée')
+            return self.login_page(nxt=nxt, code=429,
                                    err='Trop de tentatives : réessayez dans %d min.' % max(1, (wait + 59) // 60))
-        user = self.store.get(name)
-        if not self.verify(user, pw):
-            self.limiter.fail(ip, name)
-            self.log_auth('échec de connexion (%s)' % name)
-            return self.login_page(nxt=nxt, name=name, code=401, err='Identifiant ou mot de passe incorrect.')
-        self.limiter.ok(name)
-        self.log_auth('connexion (%s)' % name)
-        tok = self.store.new_session(user)
+        if not self.base.check(pw):
+            self.limiter.fail(ip)
+            self.log_auth('mot de passe incorrect')
+            return self.login_page(nxt=nxt, code=401, err='Mot de passe incorrect.')
+        self.limiter.ok(ip)
+        self.log_auth('base déverrouillée')
+        tok = self.base.new_session()
         self.redirect(nxt or '/', [self.cookie(self.cn(), tok, SESSION_MAX), self.cookie(self.cn(pre=True), '', 0)])
 
-    def do_signup(self, form):
-        if not self.cfg['signup']:
-            return self.redirect('/login?m=signup-closed')
-        if not self.check_pre(form):
-            return self.redirect('/signup')
-        name = (form.get('username') or '').strip().lower()[:64]
-        pw, pw2 = form.get('password') or '', form.get('password2') or ''
-        if not USER_RE.match(name):
-            return self.signup_page('Identifiant invalide : 3 à 32 caractères (a-z, 0-9, . _ -).', name, 400)
-        prob = password_problem(pw, name)
-        if prob:
-            return self.signup_page('Mot de passe refusé : %s.' % prob, name, 400)
-        if not ct_eq(pw, pw2):
-            return self.signup_page('Les deux mots de passe ne correspondent pas.', name, 400)
-        if not self.limiter.signup_ok(self.client_ip()):
-            return self.signup_page('Trop d\'inscriptions depuis cette adresse : réessayez plus tard.', name, 429)
-        try:
-            user = self.store.add_user(name, pw)
-        except ValueError:
-            return self.signup_page('Cet identifiant n\'est pas disponible.', '', 409)
-        self.log_auth('inscription (%s)' % name)
-        tok = self.store.new_session(user)
-        self.redirect('/', [self.cookie(self.cn(), tok, SESSION_MAX), self.cookie(self.cn(pre=True), '', 0)])
+    def do_logout(self):
+        self.base.drop_session(self.skey)
+        self.log_auth('base verrouillée')
+        self.redirect('/login?m=out', [self.cookie(self.cn(), '', 0), ('Clear-Site-Data', '"cache", "storage"')])
 
-    def clear_headers(self):
-        return [self.cookie(self.cn(), '', 0), ('Clear-Site-Data', '"cache", "storage"')]
-
-    def do_logout(self, form):
-        self.store.drop_session(self.skey)
-        self.log_auth('déconnexion (%s)' % self.user['name'])
-        self.redirect('/login?m=out', self.clear_headers())
-
-    def do_logout_all(self, form):
-        self.store.drop_sessions(self.user['name'], keep=self.skey)
-        self.redirect('/account?m=sess-ok')
-
-    def check_password_form(self, pw):
-        """Vérifie le mot de passe de l'utilisateur connecté (opérations sensibles)."""
-        ip, name = self.client_ip(), self.user['name']
-        if self.limiter.wait(ip, name):
-            return 'wait'
-        if not self.verify(self.user, pw):
-            self.limiter.fail(ip, name)
-            self.log_auth('mot de passe incorrect (%s)' % name)
-            return 'pw-bad'
-        self.limiter.ok(name)
-        return None
-
-    def do_password(self, form):
-        err = self.check_password_form(form.get('current'))
-        if err:
-            return self.redirect('/account?m=' + err)
-        pw = form.get('password') or ''
-        if password_problem(pw, self.user['name']):
-            return self.redirect('/account?m=pw-weak')
-        if not ct_eq(pw, form.get('password2')):
-            return self.redirect('/account?m=pw-mismatch')
-        user = self.store.set_password(self.user['name'], pw)   # ferme toutes les sessions
-        self.log_auth('mot de passe changé (%s)' % user['name'])
-        tok = self.store.new_session(user)
-        self.redirect('/account?m=pw-ok', [self.cookie(self.cn(), tok, SESSION_MAX)])
-
-    def do_space_new(self, form):
-        name = slugify(form.get('name') or '')[:40].strip('-_')
-        if not SPACE_RE.match(name):
-            return self.redirect('/?m=space-bad')
-        spaces = self.store.list_spaces(self.user)
-        if name in spaces:
-            return self.redirect('/?m=space-exists')
-        if len(spaces) >= MAX_SPACES:
-            return self.redirect('/?m=space-max')
-        try:
-            self.store.create_space(self.user, name)
-        except FileExistsError:
-            return self.redirect('/?m=space-exists')
-        self.redirect('/s/%s/' % name)
-
-    def do_space_delete(self, form):
-        space = form.get('space') or ''
-        if space not in self.store.list_spaces(self.user):
-            return self.redirect('/account?m=confirm')
-        err = self.check_password_form(form.get('password'))
-        if err:
-            return self.redirect('/account?m=' + err)
-        self.store.delete_space(self.user, space)
-        self.log_auth('espace supprimé (%s/%s)' % (self.user['name'], space))
-        self.redirect('/?m=space-del')
-
-    def do_account_delete(self, form):
-        if (form.get('confirm') or '').strip().lower() != self.user['name']:
-            return self.redirect('/account?m=confirm')
-        err = self.check_password_form(form.get('password'))
-        if err:
-            return self.redirect('/account?m=' + err)
-        self.store.delete_user(self.user['name'])
-        self.log_auth('compte supprimé (%s)' % self.user['name'])
-        self.redirect('/login?m=deleted', self.clear_headers())
-
-    # --- API d'écriture d'un espace ---
+    # --- API d'écriture ---
     def _target(self, name, base):
         name = (name or '').strip().replace('\\', '/').strip('/') if isinstance(name, str) else ''
         if not isinstance(base, str):
@@ -3321,7 +2513,6 @@ class Handler(BaseHTTPRequestHandler):
         content = d.get('content', '')
         if p is None or not isinstance(content, str):
             return self.send_json({'error': 'chemin invalide'}, 400)
-        old = 0
         if p.exists():
             cur = str(p.stat().st_mtime_ns)
             if d.get('mtime') and str(d['mtime']) != cur and not d.get('force'):
@@ -3329,9 +2520,6 @@ class Handler(BaseHTTPRequestHandler):
             with open(p, 'rb') as f:
                 if b'\r\n' in f.read(65536):
                     content = content.replace('\r\n', '\n').replace('\n', '\r\n')
-            old = p.stat().st_size
-        if not self.store.quota_ok(self.vault.owner, len(content.encode('utf-8')) - old):
-            return self.send_json({'error': 'quota de stockage dépassé'}, 413)
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(p, content)
@@ -3351,8 +2539,6 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self.send_json({'error': err}, 400)
         if not p.exists():
-            if not self.store.quota_ok(self.vault.owner, 4096):
-                return self.send_json({'error': 'quota de stockage dépassé'}, 413)
             p.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(p, '')
         self.send_json({'url': self.vault.url(self.rel_of(p)) + '?edit=1'})
@@ -3383,6 +2569,16 @@ class Handler(BaseHTTPRequestHandler):
             new_target = new_rel.rsplit('.', 1)[0]   # nom ambigu : on écrit le chemin
         else:
             new_target = new_stem
+        updated = self._relink(idx, mapping, old_rel, new_target)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(src, dst)
+        if move_dir:
+            new_dir.parent.mkdir(parents=True, exist_ok=True)
+            os.rename(old_dir, new_dir)
+        self.send_json({'url': self.vault.url(new_rel), 'updated': updated})
+
+    def _relink(self, idx, mapping, main=None, main_target=None):
+        """Réécrit les [[liens]] vers des notes déplacées (mapping ancien -> nouveau chemin)."""
         updated = 0
         for n in idx.notes:
             info = self.vault.info(n)
@@ -3393,9 +2589,9 @@ class Handler(BaseHTTPRequestHandler):
 
             def fix(m):
                 r = idx.resolve_note(m.group(2), n) if m.group(2).strip() else None
-                if r == old_rel:
-                    tgt = new_target
-                elif r in mapping and '/' in m.group(2):          # lien par chemin vers une sous-note
+                if r is not None and r == main:
+                    tgt = main_target
+                elif r in mapping and '/' in m.group(2):          # lien écrit avec un chemin
                     tgt = mapping[r].rsplit('.', 1)[0]
                 else:
                     return m.group(0)
@@ -3408,39 +2604,73 @@ class Handler(BaseHTTPRequestHandler):
             if new_raw != raw:
                 atomic_write(np_, new_raw)
                 updated += 1
-        dst.parent.mkdir(parents=True, exist_ok=True)
+        return updated
+
+    def _dir(self, rel):
+        p = self.safe(rel)
+        return p if p is not None and p.is_dir() and not p.is_symlink() else None
+
+    def _to_trash(self, p):
+        trash = self.vault.root / '.trash'
+        trash.mkdir(exist_ok=True)
+        dest, k = trash / p.name, 1
+        while dest.exists():
+            dest = trash / ('%s (%d)%s' % (p.stem, k, p.suffix) if p.is_file() else '%s (%d)' % (p.name, k))
+            k += 1
+        shutil.move(str(p), str(dest))
+
+    def api_mkdir(self, d):
+        name = d.get('name') if isinstance(d.get('name'), str) else ''
+        base = d.get('base') if isinstance(d.get('base'), str) else ''
+        name = name.strip().replace('\\', '/').strip('/')
+        if not name or '\x00' in name or len(name) > 512:
+            return self.send_json({'error': 'nom vide ou trop long'}, 400)
+        rel = posixpath.normpath(posixpath.join(base, name) if base else name)
+        if rel.startswith('..') or any(x.startswith('.') or not x.strip() for x in rel.split('/')):
+            return self.send_json({'error': 'nom invalide'}, 400)
+        p = self.safe(rel)
+        if p is None:
+            return self.send_json({'error': 'chemin invalide'}, 400)
+        if p.exists():
+            return self.send_json({'error': 'ce nom existe déjà'}, 409)
+        p.mkdir(parents=True)
+        parts = rel.split('/')
+        self.send_json({'path': rel, 'open': ['/'.join(parts[:i]) for i in range(1, len(parts) + 1)]})
+
+    def api_rendir(self, d):
+        src = self._dir(d.get('path'))
+        name = d.get('name') if isinstance(d.get('name'), str) else ''
+        name = name.strip()
+        if src is None:
+            return self.send_json({'error': 'dossier introuvable'}, 404)
+        if not name or '/' in name or '\\' in name or name.startswith('.') or '\x00' in name or len(name) > 255:
+            return self.send_json({'error': 'nom invalide'}, 400)
+        dst = src.parent / name
+        if dst.exists():
+            return self.send_json({'error': 'ce nom existe déjà'}, 409)
+        old, new = self.rel_of(src), self.rel_of(dst)
+        idx = self.vault.index()
+        mapping = {n: new + n[len(old):] for n in idx.notes if n.startswith(old + '/')}
+        updated = self._relink(idx, mapping)
         os.rename(src, dst)
-        if move_dir:
-            new_dir.parent.mkdir(parents=True, exist_ok=True)
-            os.rename(old_dir, new_dir)
-        for a, b in mapping.items():
-            self.store.move_shared_note(self.vault.owner['id'], self.vault.space, a, b)
-        self.send_json({'url': self.vault.url(new_rel), 'updated': updated})
+        self.send_json({'path': new, 'updated': updated})
+
+    def api_rmdir(self, d):
+        p = self._dir(d.get('path'))
+        if p is None:
+            return self.send_json({'error': 'dossier introuvable'}, 404)
+        self._to_trash(p)
+        self.send_json({'ok': True})
 
     def api_delete(self, d):
         p = self.safe(d.get('path'), note=True)
         if p is None or not p.is_file():
             return self.send_json({'error': 'note introuvable'}, 404)
-        trash = self.vault.root / '.trash'
-        trash.mkdir(exist_ok=True)
-        dest = trash / p.name
-        k = 1
-        while dest.exists():
-            dest = trash / ('%s (%d)%s' % (p.stem, k, p.suffix))
-            k += 1
-        rel, v = self.rel_of(p), self.vault
         kids = p.parent / stem(p.name)
-        shutil.move(str(p), str(dest))
+        self._to_trash(p)
         if kids.is_dir() and not kids.is_symlink():          # les sous-notes suivent leur parente
-            kd, k = trash / kids.name, 1
-            while kd.exists():
-                kd = trash / ('%s (%d)' % (kids.name, k))
-                k += 1
-            shutil.move(str(kids), str(kd))
-        pre = child_dir(rel) + '/'
-        self.store.purge_shares(lambda s: (s['owner'], s['space']) == (v.owner['id'], v.space)
-                                and s['note'] and (s['note'] == rel or s['note'].startswith(pre)))
-        self.send_json({'url': self.vault.base + '/'})
+            self._to_trash(kids)
+        self.send_json({'url': '/'})
 
     def api_toggle(self, d):
         p = self.safe(d.get('path'), note=True)
@@ -3481,8 +2711,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def ask_password(name):
     for _ in range(3):
-        pw = getpass.getpass('Mot de passe pour « %s » : ' % name)
-        prob = password_problem(pw, name)
+        pw = getpass.getpass('Mot de passe de la base « %s » : ' % name)
+        prob = password_problem(pw)
         if prob:
             print('  Refusé : %s.' % prob)
             continue
@@ -3494,83 +2724,41 @@ def ask_password(name):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Notes Markdown multi-utilisateur dans le navigateur.')
-    ap.add_argument('dossier', nargs='?', default='mdvault-data', help='dossier des données (défaut : ./mdvault-data)')
+    ap = argparse.ArgumentParser(description='Base de notes Markdown protégée par mot de passe, dans le navigateur.')
+    ap.add_argument('dossier', help='dossier de la base (créé s\'il n\'existe pas)')
     ap.add_argument('-p', '--port', type=int, default=8765, help='port (défaut : 8765)')
     ap.add_argument('--host', default='127.0.0.1', help='adresse d\'écoute (défaut : 127.0.0.1)')
     ap.add_argument('--no-browser', action='store_true', help='ne pas ouvrir le navigateur')
-    ap.add_argument('--signup', action='store_true', help='autoriser l\'inscription publique (désactivée par défaut)')
-    ap.add_argument('--quota', type=int, default=200, metavar='MO', help='quota par utilisateur en Mo (0 = illimité, défaut : 200)')
     ap.add_argument('--cert', help='certificat TLS (PEM) pour servir en HTTPS')
     ap.add_argument('--key', help='clé privée TLS (PEM)')
     ap.add_argument('--proxy', action='store_true',
                     help='derrière un reverse proxy HTTPS local : cookies Secure, IP lue dans X-Forwarded-For')
     ap.add_argument('--allow-host', action='append', default=[], metavar='NOM',
                     help='nom d\'hôte accepté dans l\'en-tête Host (répétable)')
-    g = ap.add_argument_group('gestion des comptes')
-    g.add_argument('--add-user', metavar='NOM')
-    g.add_argument('--passwd', metavar='NOM')
-    g.add_argument('--del-user', metavar='NOM')
-    g.add_argument('--list-users', action='store_true')
     args = ap.parse_args()
 
     os.umask(0o077)
-    store = Store(args.dossier, quota=max(0, args.quota) * 1024 * 1024)
-
-    if args.list_users:
-        us = store.users()
-        for n, u in sorted(us.items()):
-            print('%-32s créé le %s  espaces : %s' % (n, time.strftime('%d/%m/%Y', time.localtime(u.get('created', 0))),
-                                                     ', '.join(store.list_spaces(u)) or '—'))
-        if not us:
-            print('Aucun utilisateur.')
-        return
-    if args.add_user:
-        name = args.add_user.strip().lower()
-        if not USER_RE.match(name):
-            sys.exit('Identifiant invalide : 3 à 32 caractères (a-z, 0-9, . _ -).')
-        if store.get(name):
-            sys.exit('Cet identifiant existe déjà.')
-        store.add_user(name, ask_password(name))
-        print('Utilisateur « %s » créé (espace « notes »).' % name)
-        return
-    if args.passwd:
-        name = args.passwd.strip().lower()
-        if not store.get(name):
-            sys.exit('Utilisateur inconnu.')
-        store.set_password(name, ask_password(name))
-        print('Mot de passe modifié ; les sessions de « %s » ont été fermées.' % name)
-        return
-    if args.del_user:
-        name = args.del_user.strip().lower()
-        if not store.get(name):
-            sys.exit('Utilisateur inconnu.')
-        if input('Supprimer « %s » et TOUTES ses notes ? Tapez son nom pour confirmer : ' % name).strip().lower() != name:
-            sys.exit('Abandon.')
-        store.delete_user(name)
-        print('Utilisateur supprimé.')
-        return
-
+    root = Path(args.dossier).expanduser()
+    if root.exists() and not root.is_dir():
+        sys.exit('Erreur : « %s » n\'est pas un dossier.' % root)
+    base = Base(root)
+    if not base.initialized():
+        if not sys.stdin.isatty():
+            sys.exit('Nouvelle base : lancez mdvault dans un terminal pour choisir son mot de passe.')
+        print('Nouvelle base « %s » (%s).' % (base.root.name, base.root))
+        base.init(ask_password(base.root.name))
+        print('Base créée et protégée.')
     if bool(args.cert) != bool(args.key):
         sys.exit('Erreur : --cert et --key vont ensemble.')
+
     local = args.host in ('127.0.0.1', 'localhost', '::1')
     hosts = {h.strip().lower() for h in args.allow_host if h.strip()}
     if local:
         hosts |= {'127.0.0.1', 'localhost', '[::1]'}
-    Handler.store = store
+    Handler.base = base
+    Handler.vault = Vault(base.root)
     Handler.limiter = Limiter()
-    Handler.cfg = {'secure': bool(args.cert) or args.proxy, 'signup': args.signup, 'proxy': args.proxy, 'hosts': hosts}
-
-    if not store.users() and not args.signup:
-        print('Aucun utilisateur pour l\'instant.')
-        if sys.stdin.isatty():
-            name = input('Identifiant du premier utilisateur : ').strip().lower()
-            if not USER_RE.match(name):
-                sys.exit('Identifiant invalide : 3 à 32 caractères (a-z, 0-9, . _ -).')
-            store.add_user(name, ask_password(name))
-            print('Utilisateur « %s » créé.' % name)
-        else:
-            print('Créez-en un avec : python3 %s %s --add-user NOM' % (sys.argv[0], args.dossier))
+    Handler.cfg = {'secure': bool(args.cert) or args.proxy, 'proxy': args.proxy, 'hosts': hosts}
 
     server = None
     for port in range(args.port, args.port + 20):
@@ -3590,15 +2778,13 @@ def main():
 
     shown = 'localhost' if args.host in ('127.0.0.1', '0.0.0.0', '::') else args.host
     url = '%s://%s:%d/' % ('https' if args.cert else 'http', shown, server.server_address[1])
-    print('📚 mdvault — données : %s' % store.data)
+    print('📚 mdvault — base « %s » : %s' % (base.root.name, base.root))
     print('   %s   (Ctrl+C pour quitter)' % url)
     if _markdown is None:
         print('   (rendu intégré ; pour un rendu plus complet : sudo apt install python3-markdown python3-pygments)')
     if not local and not args.cert and not args.proxy:
-        print('   ⚠  Accessible depuis le réseau SANS chiffrement : les mots de passe circulent en clair.\n'
+        print('   ⚠  Accessible depuis le réseau SANS chiffrement : le mot de passe circule en clair.\n'
               '      Utilisez --cert/--key, ou un reverse proxy HTTPS avec --proxy.')
-    if args.signup:
-        print('   ⚠  Inscription publique activée.')
     if not args.no_browser and local:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
