@@ -5,8 +5,9 @@ mdvault — notes Markdown façon Obsidian, multi-utilisateur, dans le navigateu
 Un seul fichier, aucune dépendance obligatoire.
 
 Chaque utilisateur possède ses propres « espaces » (dossiers de notes privés,
-isolés les uns des autres). Personne ne peut lire ou modifier les espaces
-d'un autre utilisateur.
+isolés les uns des autres). Un espace entier ou une seule note peut être
+partagé avec un autre utilisateur, en lecture seule ou en lecture et écriture
+(page « Partages ») ; sans partage, personne d'autre n'y a accès.
 
 Utilisation :
     python3 mdvault.py [DONNEES] [-p PORT] [--host HOTE] [--no-browser]
@@ -18,6 +19,7 @@ Utilisation :
     DONNEES : dossier des données (défaut : ./mdvault-data)
         users.json              comptes (mots de passe hachés avec scrypt)
         sessions.json           sessions actives (jetons hachés)
+        shares.json             partages entre utilisateurs
         spaces/<id>/<espace>/   notes de chaque utilisateur
 
 Exposition sur un réseau : utilisez TLS (--cert/--key) ou un reverse proxy
@@ -96,6 +98,7 @@ SESSION_MAX = 7 * 24 * 3600       # durée de vie absolue d'une session
 MAX_BODY = 5 * 1024 * 1024        # taille maximale d'une note envoyée
 MAX_FORM = 16 * 1024              # taille maximale d'un formulaire
 MAX_SPACES = 20                   # espaces par utilisateur
+MAX_SHARES = 200                  # partages créés par utilisateur
 PW_MIN, PW_MAX = 10, 1024
 USER_RE = re.compile(r'^[a-z0-9][a-z0-9_.-]{2,31}$')
 SPACE_RE = re.compile(r'^[a-z0-9][a-z0-9_-]{0,39}$')
@@ -141,6 +144,7 @@ ICONS = {
     'user': '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
     'logout': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
     'spaces': '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    'share': '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
     'lock': '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
 }
 
@@ -338,7 +342,9 @@ class Store:
         self.spaces.mkdir(mode=0o700, exist_ok=True)
         self.ufile = self.data / 'users.json'
         self.sfile = self.data / 'sessions.json'
+        self.hfile = self.data / 'shares.json'
         self.lock = threading.RLock()
+        self._locks = {}
         self.quota = quota
         self._users, self._umt = {}, None
         self._sess = {}
@@ -346,6 +352,11 @@ class Store:
         self._usage = {}
         self._dummy = None
         self._load_sessions()
+        try:
+            with open(self.hfile, encoding='utf-8') as f:
+                self._shares = json.load(f).get('shares', {})
+        except (OSError, ValueError):
+            self._shares = {}
 
     @property
     def dummy(self):
@@ -382,6 +393,69 @@ class Store:
             u = self._users.get(name)
             return dict(u, name=name) if u else None
 
+    def user_by_id(self, uid):
+        with self.lock:
+            self._reload()
+            for n, u in self._users.items():
+                if u['id'] == uid:
+                    return dict(u, name=n)
+        return None
+
+    def lock_for(self, path):
+        with self.lock:
+            return self._locks.setdefault(str(path), threading.Lock())
+
+    # --- partages (un espace entier ou une seule note, vers un autre utilisateur) ---
+    def _save_shares(self):
+        write_private(self.hfile, {'version': 1, 'shares': self._shares})
+
+    def shares(self):
+        with self.lock:
+            return {k: dict(v) for k, v in self._shares.items()}
+
+    def get_share(self, sid):
+        if not isinstance(sid, str) or not re.fullmatch(r'[\w-]{16,64}', sid):
+            return None
+        with self.lock:
+            s = self._shares.get(sid)
+            return dict(s) if s else None
+
+    def _forget(self, sids):
+        for k in [k for k in self._vaults if len(k) == 3 and k[2] in sids]:
+            del self._vaults[k]
+
+    def add_share(self, owner, space, note, to, role):
+        with self.lock:
+            for sid, s in self._shares.items():       # même cible, même destinataire : mise à jour des droits
+                if (s['owner'], s['space'], s['note'], s['to']) == (owner['id'], space, note, to['id']):
+                    s['role'] = role
+                    self._forget({sid})
+                    self._save_shares()
+                    return sid
+            sid = secrets.token_urlsafe(18)
+            self._shares[sid] = {'owner': owner['id'], 'space': space, 'note': note, 'to': to['id'],
+                                 'role': role, 'created': int(time.time())}
+            self._save_shares()
+            return sid
+
+    def purge_shares(self, pred):
+        with self.lock:
+            gone = {k for k, v in self._shares.items() if pred(v)}
+            if gone:
+                for k in gone:
+                    del self._shares[k]
+                self._forget(gone)
+                self._save_shares()
+
+    def move_shared_note(self, owner_id, space, old, new):
+        with self.lock:
+            hit = {k for k, v in self._shares.items() if (v['owner'], v['space'], v['note']) == (owner_id, space, old)}
+            for k in hit:
+                self._shares[k]['note'] = new
+            if hit:
+                self._forget(hit)
+                self._save_shares()
+
     def add_user(self, name, pw):
         h = hash_password(pw)
         with self.lock:
@@ -416,6 +490,7 @@ class Store:
             self.drop_sessions(name)
             for k in [k for k in self._vaults if k[0] == u['id']]:
                 del self._vaults[k]
+        self.purge_shares(lambda s: u['id'] in (s['owner'], s['to']))
         d = self.spaces / u['id']
         if d.is_dir() and not d.is_symlink():
             shutil.rmtree(d, ignore_errors=True)
@@ -495,18 +570,31 @@ class Store:
         except FileNotFoundError:
             return []
 
-    def vault(self, user, space):
+    def vault(self, user, space, sid=None, share=None):
         if not isinstance(space, str) or not SPACE_RE.match(space):
             return None
         p = self.user_dir(user) / space
         if p.is_symlink() or not p.is_dir():
             return None
-        key = (user['id'], space)
+        key = (user['id'], space, sid) if sid else (user['id'], space)
         with self.lock:
             v = self._vaults.get(key)
             if v is None:
-                v = self._vaults[key] = Vault(p, '/s/' + space)
+                if sid:
+                    v = Vault(p, '/p/' + sid, user, space, self.lock_for(p.resolve()),
+                              only=share['note'], ro=share['role'] != 'w', shared_by=user['name'])
+                else:
+                    v = Vault(p, '/s/' + space, user, space, self.lock_for(p.resolve()))
+                self._vaults[key] = v
             return v
+
+    def shared_vault(self, viewer, sid):
+        """Espace vu à travers un partage : vérifié à chaque requête (révocation immédiate)."""
+        sh = self.get_share(sid)
+        if not sh or sh['to'] != viewer['id']:
+            return None
+        owner = self.user_by_id(sh['owner'])
+        return self.vault(owner, sh['space'], sid, sh) if owner else None
 
     def create_space(self, user, space):
         d = self.user_dir(user)
@@ -517,6 +605,7 @@ class Store:
         p = self.user_dir(user) / space
         with self.lock:
             self._vaults.pop((user['id'], space), None)
+        self.purge_shares(lambda s: (s['owner'], s['space']) == (user['id'], space))
         if p.is_dir() and not p.is_symlink():
             shutil.rmtree(p)
         self._usage.pop(user['id'], None)
@@ -671,6 +760,38 @@ class Index:
         cands = self.files.get(low.rsplit('/', 1)[-1])
         return min(cands, key=len) if cands else None
 
+    def restrict(self, vault, rel):
+        """Ne garde que la note partagée et les fichiers qu'elle intègre."""
+        keep = set()
+        info = vault.info(rel) if rel in self.noteset else None
+        if info:
+            keep.add(rel)
+            for i, seg in enumerate(split_code(info['body'])):
+                if i % 2:
+                    continue
+                for m in WIKILINK.finditer(seg):
+                    t = m.group(2).strip()
+                    if m.group(1) and '.' in t.rsplit('/', 1)[-1] and not is_note(t):
+                        f = self.resolve_file(t, rel)
+                        if f:
+                            keep.add(f)
+                for m in re.finditer(r'!\[[^\]]*\]\(\s*<?([^)\s>]+)', seg):
+                    t = m.group(1)
+                    if not _SCHEME.match(t.lower()) and not t.startswith('/'):
+                        c = posixpath.normpath(posixpath.join(posixpath.dirname(rel), urllib.parse.unquote(t)))
+                        if c in self.all_lower.values():
+                            keep.add(c)
+        self.notes = [n for n in self.notes if n in keep]
+        self.noteset = set(self.notes)
+        self.files = {k: [x for x in v if x in keep] for k, v in self.files.items()}
+        self.files = {k: v for k, v in self.files.items() if v}
+        self.all_lower = {k: v for k, v in self.all_lower.items() if v in keep}
+        self.by_stem = {k: [x for x in v if x in keep] for k, v in self.by_stem.items()}
+        self.by_stem = {k: v for k, v in self.by_stem.items() if v}
+        self.by_path = {k: v for k, v in self.by_path.items() if v in keep}
+        self._out = {}
+        return self
+
     def out_links(self, vault, rel):
         if rel in self._out:
             return self._out[rel]
@@ -690,18 +811,25 @@ class Index:
 
 
 class Vault:
-    def __init__(self, root, base):
+    def __init__(self, root, base, owner=None, space='', lock=None, only=None, ro=False, shared_by=None):
         self.root = Path(root).resolve()
         self.base = base
         self.name = self.root.name
-        self.lock = threading.Lock()
+        self.owner, self.space = owner, space
+        self.lock = lock or threading.Lock()
+        self.only, self.ro, self.shared_by = only, ro, shared_by
+        self.can_create = not ro and not only        # créer, renommer, supprimer
         self._cache = {}
 
     def url(self, rel):
         return self.base + '/note/' + urllib.parse.quote(rel)
 
     def index(self):
-        return Index(self.root)
+        idx = Index(self.root)
+        return idx.restrict(self, self.only) if self.only else idx
+
+    def allowed(self, rel):
+        return not self.only or rel in self.index().all_lower.values()
 
     def info(self, rel):
         p = self.root / rel
@@ -942,6 +1070,8 @@ def _render(vault, idx, rel, body, depth=0, seen=None, interactive=True):
             return T('<a href="%s">📎 %s</a>' % (url, esc(target)))
         dest = idx.resolve_note(target, rel) if target else rel
         label = alias if (alias and not bang) else (target + (' › ' + head if head else '') if target else head)
+        if not dest and not vault.can_create:
+            return T('<span class="wikilink missing">%s</span>' % esc(label))
         if not dest:
             return T('<a class="wikilink missing" href="#" data-new="%s" data-base="%s" '
                      'title="Note inexistante — cliquer pour la créer">%s</a>'
@@ -1370,6 +1500,13 @@ html.authpage,html.authpage body{overflow:auto;height:auto;min-height:100%}
 .box.danger{border-color:color-mix(in srgb,var(--err) 45%,var(--border))}
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}.row .field{flex:1;min-width:180px}
 select.field{appearance:auto}
+.row .lbl{flex:1;min-width:180px}
+.srow{display:flex;align-items:center;gap:10px;padding:10px 0;border-top:1px solid var(--border);flex-wrap:wrap}
+.srow:first-of-type{border-top:0}.srow .sinfo{flex:1;min-width:200px}.srow small{display:block;color:var(--muted);font-size:12.5px}
+.badge{display:inline-block;font-size:11px;font-weight:650;padding:1px 8px;border-radius:999px;background:var(--bg3);color:var(--muted);margin-left:6px;vertical-align:1px}
+.badge.w{background:var(--accent-bg);color:var(--link)}
+.vault small{display:block;font-weight:400;font-size:11.5px;color:var(--muted)}
+.ro .tree-row .add{display:none}
 
 /* ---- petits écrans ---- */
 @media (max-width:1100px){
@@ -1406,6 +1543,7 @@ const dirOf=p=>p.includes('/')?p.slice(0,p.lastIndexOf('/')):'';
 const LS={get(k,d){try{const v=localStorage.getItem('mdv-'+k);return v===null?d:JSON.parse(v);}catch(e){return d;}},
           set(k,v){try{localStorage.setItem('mdv-'+k,JSON.stringify(v));}catch(e){}}};
 const SK=k=>k+':'+B;
+const CAN=!MDV.ro&&!MDV.single;   /* créer / renommer / supprimer */
 const sc=$('#scroller');
 
 async function api(url,data,retry){
@@ -1522,11 +1660,12 @@ $('#tree').addEventListener('click',e=>{const b=e.target.closest('button.add');i
 
 /* ---------- notes : création, récentes ---------- */
 async function newNote(base,name){
+  if(!CAN)return;
   if(!name)name=await ask(base?'Nouvelle note dans « '+base+' »':'Nouvelle note','', 'Créer','Astuce : « dossier/nom » pour créer dans un sous-dossier.');
   if(!name)return;
   try{const j=await api('/api/new',{name,base:base||''});location.href=j.url;}catch(e){toast('Création impossible : '+e.message,'err');}
 }
-$('#b-new').onclick=()=>newNote('');
+const bn=$('#b-new');if(bn)bn.onclick=()=>newNote('');
 const qn=$('#q-new');if(qn)qn.onclick=()=>newNote('');
 document.addEventListener('click',e=>{
   const a=e.target.closest('a.wikilink.missing[data-new]');
@@ -1573,7 +1712,7 @@ function openPalette(initial){
       res.sort((a,b)=>b[0]-a[0]);res.slice(0,50).forEach(([s,n,idx],i)=>out.push(noteItem(n,idx,i?null:'Notes')));
       const ql=q.toLowerCase(),exact=NOTES.some(n=>n.nl===ql||n.pl.replace(/\.(md|markdown)$/,'')===ql);
       let fa=true;
-      if(!exact){out.push({action:1,head:'Actions',html:ICON('plus')+'<span class="pn">Créer la note « <b>'+escH(q)+'</b> »</span>',act:()=>newNote('',q)});fa=false;}
+      if(!exact&&CAN){out.push({action:1,head:'Actions',html:ICON('plus')+'<span class="pn">Créer la note « <b>'+escH(q)+'</b> »</span>',act:()=>newNote('',q)});fa=false;}
       out.push({action:1,head:fa?'Actions':null,html:ICON('search')+'<span class="pn">Chercher « '+escH(q)+' » dans toutes les notes</span>',act:()=>location.href=B+'/search?q='+encodeURIComponent(q)});
     }
     items=out;sel=0;draw();
@@ -1709,7 +1848,7 @@ if(NOTE){
     document.body.classList.toggle('editing',edit);view.hidden=edit;ed.hidden=!edit;bPrev.hidden=!edit;
   }
   function openEditor(){
-    if(editing())return;
+    if(editing()||MDV.ro)return;
     const ratio=sc.scrollTop/Math.max(1,sc.scrollHeight-sc.clientHeight);
     setMode(true);ta.focus({preventScroll:true});
     requestAnimationFrame(()=>{ta.scrollTop=ratio*(ta.scrollHeight-ta.clientHeight);});
@@ -1897,14 +2036,15 @@ if(NOTE){
     tt.addEventListener('paste',e=>{e.preventDefault();document.execCommand('insertText',false,(e.clipboardData.getData('text/plain')||'').replace(/\s+/g,' '));});
   }
   $('#b-more').onclick=e=>openMenu(e.currentTarget,[
-    {icon:'pencil',label:'Renommer…',act:()=>ask('Renommer la note',NAME,'Renommer','Les [[liens]] des autres notes seront mis à jour.').then(v=>{if(v&&v!==NAME)rename(v);})},
+    CAN&&{icon:'pencil',label:'Renommer…',act:()=>ask('Renommer la note',NAME,'Renommer','Les [[liens]] des autres notes seront mis à jour.').then(v=>{if(v&&v!==NAME)rename(v);})},
     {icon:'link',label:'Copier le lien [[…]]',act:()=>copyText('[['+NAME+']]','Lien copié')},
+    MDV.owner&&{icon:'share',label:'Partager la note…',act:()=>location.href='/shares?space='+encodeURIComponent(MDV.space)+'&note='+encodeURIComponent(NOTE)},
     null,
     {icon:'width',label:D.classList.contains('wide')?'Largeur de lecture normale':'Largeur de lecture étendue',act:()=>{D.classList.toggle('wide');LS.set('wide',D.classList.contains('wide'));}},
     {icon:'type',label:D.classList.contains('mono')?'Éditeur : police proportionnelle':'Éditeur : police à chasse fixe',act:()=>{D.classList.toggle('mono');LS.set('mono',D.classList.contains('mono'));}},
-    null,
-    {icon:'trash',label:'Supprimer',cls:'danger',act:del}
-  ]);
+    CAN&&null,
+    CAN&&{icon:'trash',label:'Supprimer',cls:'danger',act:del}
+  ].filter(x=>x!==false));
 
   document.addEventListener('keydown',e=>{
     const mod=e.ctrlKey||e.metaKey,k=e.key.toLowerCase();
@@ -1935,8 +2075,8 @@ PAGE = """<!doctype html>
 <body class="{{BODYCLS}}">
 <div id="app">
 <aside id="side">
-  <div class="side-head"><a class="vault" href="{{BASE}}/" title="Espace « {{VAULT}} »">{{VAULT}}</a>
-    <button class="ib" id="b-new" title="Nouvelle note (Alt+N)">{{I_FILEPLUS}}</button>
+  <div class="side-head"><a class="vault" href="{{BASE}}/" title="Espace « {{VAULTNAME}} »">{{VAULT}}</a>
+    {{NEWBTN}}
     <button class="ib" id="b-collapse" title="Tout replier">{{I_COLLAPSE}}</button></div>
   <button class="searchbtn" id="b-switch">{{I_SEARCH}}<span>Rechercher…</span><kbd>Ctrl K</kbd></button>
   <nav class="side-nav">{{NAV}}</nav>
@@ -1988,6 +2128,13 @@ MSGS = {
     'confirm': ('err', 'La confirmation ne correspond pas.'),
     'wait': ('err', 'Trop de tentatives : réessayez dans quelques minutes.'),
     'signup-closed': ('err', 'Les inscriptions sont fermées.'),
+    'share-ok': ('ok', 'Partage enregistré.'),
+    'share-del': ('ok', 'Partage retiré.'),
+    'share-user': ('err', 'Utilisateur inconnu.'),
+    'share-self': ('err', 'Vous ne pouvez pas partager avec vous-même.'),
+    'share-space': ('err', 'Espace introuvable.'),
+    'share-note': ('err', 'Note introuvable dans cet espace.'),
+    'share-max': ('err', 'Nombre maximal de partages atteint (%d).' % MAX_SHARES),
 }
 
 
@@ -2152,6 +2299,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if note and not is_note(p.name):
             return None
+        if self.vault.only and not self.vault.allowed(p.relative_to(root).as_posix()):
+            return None
         return p
 
     def rel_of(self, p):
@@ -2170,10 +2319,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def topbar(self):
         return ('<div class="topbar"><a class="brand" href="/">%s mdvault</a><span class="sp"></span>'
-                '<span class="who">%s</span><a class="btn" href="/">%s Espaces</a><a class="btn" href="/account">%s Compte</a>'
+                '<span class="who">%s</span><a class="btn" href="/">%s Espaces</a><a class="btn" href="/shares">%s Partages</a>'
+                '<a class="btn" href="/account">%s Compte</a>'
                 '<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="%s">'
                 '<button class="btn">%s Déconnexion</button></form></div>'
-                % (icon('lock'), esc(self.user['name']), icon('spaces'), icon('user'), esc(self.sess['csrf']),
+                % (icon('lock'), esc(self.user['name']), icon('spaces'), icon('share'), icon('user'), esc(self.sess['csrf']),
                    icon('logout')))
 
     def page(self, title, main, right='', current=None, idx=None, mainattr='', crumbs=None,
@@ -2192,21 +2342,30 @@ class Handler(BaseHTTPRequestHandler):
                     '<div class="tags-box">%s</div></details>') % (len(counts), ''.join(
                         '<a class="tag" href="%s/search?q=%s">#%s<span class="n">%d</span></a>'
                         % (v.base, urllib.parse.quote('#' + t), esc(t), c) for t, c in top))
-        nav = ''.join('<a href="%s"%s>%s%s</a>' % (href, ' class="on"' if key == nav_on else '', icon(ic), lab)
-                      for key, href, ic, lab in (('home', v.base + '/', 'home', 'Accueil'),
-                                                 ('search', v.base + '/search', 'search', 'Recherche'),
-                                                 ('spaces', '/', 'spaces', 'Espaces')))
-        mdv = {'csrf': self.sess['csrf'], 'base': v.base, 'icons': ICONS, 'notes': [[r, stem(r)] for r in idx.notes]}
+        links = [('home', v.base + '/', 'home', 'Accueil'), ('search', v.base + '/search', 'search', 'Recherche')]
+        if not v.shared_by:
+            links.append(('share', '/shares?space=' + urllib.parse.quote(v.space), 'share', 'Partager'))
+        links.append(('spaces', '/', 'spaces', 'Espaces'))
+        nav = ''.join('<a href="%s"%s>%s%s</a>' % (esc(href), ' class="on"' if key == nav_on else '', icon(ic), lab)
+                      for key, href, ic, lab in links)
+        mdv = {'csrf': self.sess['csrf'], 'base': v.base, 'icons': ICONS, 'notes': [[r, stem(r)] for r in idx.notes],
+               'ro': v.ro, 'single': bool(v.only), 'owner': not v.shared_by, 'space': v.space}
+        label = esc(v.name)
+        if v.shared_by:
+            label += '<small>%s par %s · %s</small>' % ('note partagée' if v.only else 'partagé', esc(v.shared_by),
+                                                      'lecture seule' if v.ro else 'lecture et écriture')
         nonce = secrets.token_urlsafe(16)
         vals = {
             'TITLE': esc(title), 'CSS': CSS, 'PYG': PYG_CSS, 'JS': JS, 'HEADJS': HEAD_JS, 'NONCE': nonce,
             'MDVJSON': json.dumps(mdv, ensure_ascii=False).replace('<', '\\u003c').replace('>', '\\u003e'),
-            'VAULT': esc(v.name), 'BASE': v.base, 'USER': esc(self.user['name']), 'CSRF': esc(self.sess['csrf']),
+            'VAULT': label, 'VAULTNAME': esc(v.name), 'BASE': v.base, 'USER': esc(self.user['name']), 'CSRF': esc(self.sess['csrf']),
             'COUNT': str(len(idx.notes)), 'NAV': nav,
             'TREE': tree_html(v, build_tree(idx.notes), current) if idx.notes else
                     '<p class="panel empty" style="padding:4px 8px">Aucune note pour l\'instant.</p>',
             'TAGS': tags, 'MAIN': main, 'RIGHT': right, 'MAINATTR': mainattr,
-            'BODYCLS': '' if right else 'noright',
+            'BODYCLS': ('' if right else 'noright') + ('' if v.can_create else ' ro'),
+            'NEWBTN': ('<button class="ib" id="b-new" title="Nouvelle note (Alt+N)">%s</button>' % icon('fileplus'))
+                      if v.can_create else '',
             'CRUMBS': crumbs if crumbs is not None else '<b>%s</b>' % esc(title),
             'ACTIONS': actions,
             'I_FILEPLUS': icon('fileplus'), 'I_COLLAPSE': icon('collapse'), 'I_SEARCH': icon('search'),
@@ -2273,14 +2432,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.account_page(qv('m'))
         if path == '/api/csrf':
             return self.send_json({'csrf': self.sess['csrf']})
-        m = re.match(r'^/s/([^/]+)(/.*)?$', path)
+        if path == '/shares':
+            return self.shares_page(qv('m'), qv('space'), qv('note'))
+        m = re.match(r'^/([sp])/([^/]+)(/.*)?$', path)
         if m:
-            v = self.store.vault(self.user, m.group(1))
+            v = self.get_vault(m.group(1), m.group(2))
             if v is None:
                 return self.auth_page('Introuvable', self.topbar() + '<h1 class="auth-h">Espace introuvable</h1>',
                                       code=404, wide=True)
             self.vault = v
-            sub = m.group(2)
+            sub = m.group(3)
             if not sub:
                 return self.redirect(v.base + '/')
             if sub == '/':
@@ -2296,6 +2457,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_page('Introuvable', '<div class="content"><h1 class="page-title">Page introuvable</h1></div>',
                                   code=404)
         return self.auth_page('Introuvable', self.topbar() + '<h1 class="auth-h">Page introuvable</h1>', code=404, wide=True)
+
+    def get_vault(self, kind, key):
+        if kind == 's':
+            return self.store.vault(self.user, key)
+        return self.store.shared_vault(self.user, key)
 
     # --- pages publiques ---
     def pre_token(self):
@@ -2343,6 +2509,17 @@ class Handler(BaseHTTPRequestHandler):
         quota = ''
         if self.store.quota:
             quota = ' · %.1f / %d Mo utilisés' % (self.store.usage(self.user) / 1048576, self.store.quota // 1048576)
+        names = {u['id']: n for n, u in self.store.users().items()}
+        shared = sorted(((sid, s) for sid, s in self.store.shares().items() if s['to'] == self.user['id']
+                         and s['owner'] in names), key=lambda x: (names[x[1]['owner']], x[1]['space'], x[1]['note'] or ''))
+        if not cards:
+            cards = '<p class="lead">Aucun espace : créez-en un ci-dessous.</p>'
+        if shared:
+            cards += '</div><h2 class="h3" style="margin-top:26px">Partagés avec moi</h2><div class="cards">' + ''.join(
+                '<a class="card" href="/p/%s/"><b>%s</b><p>%s par %s</p><small>%s</small></a>'
+                % (esc(sid), esc(stem(s['note']) if s['note'] else s['space']), 'Note partagée' if s['note'] else 'Espace partagé',
+                   esc(names[s['owner']]), 'lecture et écriture' if s['role'] == 'w' else 'lecture seule')
+                for sid, s in shared)
         body = (self.topbar() + '<h1 class="auth-h">Vos espaces</h1><p class="lead">Chaque espace est un dossier de notes '
                 'privé, visible par vous seul%s.</p>%s<div class="cards">%s</div>'
                 '<div class="box"><h2>Nouvel espace</h2><form method="post" action="/spaces/new" class="row">'
@@ -2391,9 +2568,91 @@ class Handler(BaseHTTPRequestHandler):
                 '<div class="btns"><button class="btn danger">Supprimer mon compte</button></div></form></div>')
         self.auth_page('Compte', body, wide=True)
 
+    def shares_page(self, msg='', space='', note=''):
+        st, uid = self.store, self.user['id']
+        csrf = esc(self.sess['csrf'])
+        hid = '<input type="hidden" name="csrf" value="%s">' % csrf
+        names = {u['id']: n for n, u in st.users().items()}
+        spaces = st.list_spaces(self.user)
+        allsh = st.shares()
+        role = lambda s: '<span class="badge%s">%s</span>' % (' w' if s['role'] == 'w' else '',
+                                                              'lecture et écriture' if s['role'] == 'w' else 'lecture seule')
+        what = lambda s: ('%s %s' % (icon('file'), esc(s['note'])) if s['note'] else
+                          '%s Espace « %s »' % (icon('spaces'), esc(s['space'])))
+
+        def rows(items, mine):
+            out = ''
+            for sid, s in items:
+                who = names.get(s['to'] if mine else s['owner'], '?')
+                out += ('<div class="srow"><div class="sinfo"><b>%s</b> %s<small>%s%s %s</small></div>%s'
+                        '<form method="post" action="/shares/delete">%s<input type="hidden" name="id" value="%s">'
+                        '<button class="btn">%s</button></form></div>'
+                        % (what(s), role(s), 'dans l\'espace %s · ' % esc(s['space']) if s['note'] else '',
+                           'avec' if mine else 'de', esc(who),
+                           '' if mine else '<a class="btn primary" href="/p/%s/">Ouvrir</a>' % esc(sid),
+                           hid, esc(sid), 'Révoquer' if mine else 'Retirer'))
+            return out
+        mine = sorted(((k, v) for k, v in allsh.items() if v['owner'] == uid),
+                      key=lambda x: (x[1]['space'], x[1]['note'] or '', names.get(x[1]['to'], '')))
+        tome = sorted(((k, v) for k, v in allsh.items() if v['to'] == uid and v['owner'] in names),
+                      key=lambda x: (names[x[1]['owner']], x[1]['space'], x[1]['note'] or ''))
+        opts = ''.join('<option value="%s"%s>%s</option>' % (esc(s), ' selected' if s == space else '', esc(s))
+                       for s in spaces)
+        body = (self.topbar() + '<h1 class="auth-h">Partages</h1><p class="lead">Partagez un espace entier ou une seule '
+                'note avec un autre utilisateur, en lecture seule ou en lecture et écriture.</p>' + self.alert(msg) +
+                ('<div class="box"><h2>Nouveau partage</h2><form method="post" action="/shares/new">' + hid +
+                 '<div class="row"><label class="lbl">Espace<select class="field" name="space" required>%s</select></label>'
+                 '<label class="lbl">Note (vide = tout l\'espace)<input class="field" name="note" value="%s" maxlength="512" '
+                 'placeholder="dossier/note.md" spellcheck="false" autocomplete="off"></label></div>'
+                 '<div class="row"><label class="lbl">Avec l\'utilisateur<input class="field" name="to" required maxlength="32" '
+                 'autocapitalize="none" spellcheck="false" autocomplete="off"%s></label>'
+                 '<label class="lbl">Droits<select class="field" name="role"><option value="r">Lecture seule</option>'
+                 '<option value="w">Lecture et écriture</option></select></label></div>'
+                 '<div class="btns"><button class="btn primary">%s Partager</button></div></form></div>'
+                 % (opts, esc(note), ' autofocus' if space else '', icon('share')) if spaces else '') +
+                '<div class="box"><h2>Mes partages</h2>%s</div>' % (rows(mine, True) or '<p>Aucun partage.</p>') +
+                '<div class="box"><h2>Partagés avec moi</h2>%s</div>' % (rows(tome, False) or '<p>Rien pour l\'instant.</p>'))
+        self.auth_page('Partages', body, wide=True)
+
+    def do_share_new(self, form):
+        st = self.store
+        space = form.get('space') or ''
+        if space not in st.list_spaces(self.user):
+            return self.redirect('/shares?m=share-space')
+        note = (form.get('note') or '').strip().replace('\\', '/').strip('/') or None
+        if note:
+            if not is_note(note):
+                note += '.md'
+            root = (st.user_dir(self.user) / space).resolve()
+            p = (root / note).resolve()
+            if (len(note) > 512 or '\x00' in note or any(x.startswith('.') for x in note.split('/'))
+                    or root not in p.parents or not p.is_file()):
+                return self.redirect('/shares?m=share-note&space=' + urllib.parse.quote(space))
+            note = p.relative_to(root).as_posix()
+        to = st.get((form.get('to') or '').strip().lower()[:64])
+        q = '&space=%s&note=%s' % (urllib.parse.quote(space), urllib.parse.quote(note or ''))
+        if not to:
+            return self.redirect('/shares?m=share-user' + q)
+        if to['id'] == self.user['id']:
+            return self.redirect('/shares?m=share-self' + q)
+        if sum(1 for s in st.shares().values() if s['owner'] == self.user['id']) >= MAX_SHARES:
+            return self.redirect('/shares?m=share-max')
+        st.add_share(self.user, space, note, to, 'w' if form.get('role') == 'w' else 'r')
+        self.log_auth('partage %s/%s%s -> %s' % (self.user['name'], space, '/' + note if note else '', to['name']))
+        self.redirect('/shares?m=share-ok')
+
+    def do_share_delete(self, form):
+        sid, uid = form.get('id') or '', self.user['id']
+        sh = self.store.get_share(sid)
+        if sh and uid in (sh['owner'], sh['to']):
+            self.store.purge_shares(lambda s, sh=sh: s == sh)
+        self.redirect('/shares?m=share-del')
+
     # --- pages d'un espace ---
     def home(self):
         v = self.vault
+        if v.only:
+            return self.redirect(v.url(v.only))
         idx = v.index()
         for name in ('index', 'readme', 'home', 'accueil'):
             for rel in idx.notes:
@@ -2464,24 +2723,25 @@ class Handler(BaseHTTPRequestHandler):
 
         idx = v.index()
         info = v.info(rel)
-        body_html = render(v, idx, rel, info['body'])
+        body_html = render(v, idx, rel, info['body'], interactive=not v.ro)
         title = stem(rel)
         folders = rel.split('/')[:-1]
         crumbs = ''.join('<span>%s</span><span class="sep">/</span>' % esc(f) for f in folders) + \
             '<b>%s</b><span class="dot" title="Modifications non enregistrées"></span>' % esc(title)
-        actions = ('<div class="seg"><button id="m-read" class="on" title="Lecture (Ctrl+E)">%s<span>Lecture</span></button>'
+        actions = ('<span class="badge">lecture seule</span>' if v.ro else '') + (
+                   '<div class="seg"%s><button id="m-read" class="on" title="Lecture (Ctrl+E)">%s<span>Lecture</span></button>'
                    '<button id="m-edit" title="Édition (Ctrl+E)">%s<span>Édition</span></button></div>'
                    '<button class="ib" id="b-prev" title="Aperçu côte à côte" hidden>%s</button>'
                    '<button class="ib" id="b-more" title="Plus d\'actions">%s</button>'
                    '<button class="ib" id="b-right" title="Panneau de droite">%s</button>'
-                   % (icon('eye'), icon('pencil'), icon('cols'), icon('dots'), icon('rside')))
+                   % (' hidden' if v.ro else '', icon('eye'), icon('pencil'), icon('cols'), icon('dots'), icon('rside')))
         tags_meta = ''.join('<a class="tag" href="%s/search?q=%s">#%s</a>' % (v.base, urllib.parse.quote('#' + t), esc(t))
                             for t in sorted(front_tags(info['meta'])))
         fm = ('<details class="fm"><summary>Propriétés</summary><pre>%s</pre></details>'
               % esc(info['meta'])) if info['meta'].strip() else ''
         main = (
             '<div id="view" class="content">'
-            '<h1 class="title" id="ntitle" contenteditable="plaintext-only" spellcheck="false" title="Cliquer pour renommer">%s</h1>'
+            '<h1 class="title" id="ntitle"%s>%s</h1>'
             '<div class="meta"><span>Modifiée le %s</span><span id="words"></span>%s</div>%s'
             '<article class="md" id="art">%s</article></div>'
             '<div id="editor" hidden><div class="edwrap"><textarea id="src" spellcheck="true" lang="fr" '
@@ -2489,7 +2749,8 @@ class Handler(BaseHTTPRequestHandler):
             '<div id="preview" class="md"></div></div>'
             '<div class="edfoot"><span id="status" class="status">Sauvegarde automatique</span><span class="sp"></span>'
             '<span id="pos"></span><span id="wc"></span><span><kbd>?</kbd> raccourcis</span></div></div>'
-        ) % (esc(title), fmt_time(info['mtime']), tags_meta, fm, body_html, esc(read_raw(p)))
+        ) % (' contenteditable="plaintext-only" spellcheck="false" title="Cliquer pour renommer"' if v.can_create else '',
+             esc(title), fmt_time(info['mtime']), tags_meta, fm, body_html, esc(read_raw(p)))
 
         back = sorted((n for n in idx.notes if n != rel and rel in idx.out_links(v, n)), key=str.lower)
         outl = sorted(idx.out_links(v, rel), key=str.lower)
@@ -2549,7 +2810,7 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get('Content-Length') or 0)
         except ValueError:
             n = -1
-        is_api = path.startswith('/s/')
+        is_api = path.startswith(('/s/', '/p/'))
         if n < 0 or n > (MAX_BODY if is_api else MAX_FORM):
             self.close_connection = True
             return self.send_json({'error': 'requête trop volumineuse ou invalide'}, 413)
@@ -2571,12 +2832,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.do_signup(form)
             if not self.user:
                 return self.redirect('/login')
-            back = '/account' if path.startswith('/account') or path == '/logout-all' or path == '/spaces/delete' else '/'
+            back = ('/account' if path.startswith('/account') or path in ('/logout-all', '/spaces/delete') else
+                    '/shares' if path.startswith('/shares') else '/')
             if not ct_eq(form.get('csrf'), self.sess['csrf']):
                 return self.redirect(back + '?m=expired')
             fn = {'/logout': self.do_logout, '/logout-all': self.do_logout_all, '/spaces/new': self.do_space_new,
                   '/spaces/delete': self.do_space_delete, '/account/password': self.do_password,
-                  '/account/delete': self.do_account_delete}.get(path)
+                  '/account/delete': self.do_account_delete, '/shares/new': self.do_share_new,
+                  '/shares/delete': self.do_share_delete}.get(path)
             if not fn:
                 return self.send_json({'error': 'route inconnue'}, 404)
             return fn(form)
@@ -2587,8 +2850,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'error': 'jeton CSRF invalide', 'code': 'csrf'}, 403)
         if ctype != 'application/json':
             return self.send_json({'error': 'type de contenu refusé'}, 415)
-        m = re.match(r'^/s/([^/]+)/api/(\w+)$', path)
-        v = self.store.vault(self.user, m.group(1)) if m else None
+        m = re.match(r'^/([sp])/([^/]+)/api/(\w+)$', path)
+        v = self.get_vault(m.group(1), m.group(2)) if m else None
         if v is None:
             return self.send_json({'error': 'route inconnue'}, 404)
         self.vault = v
@@ -2598,9 +2861,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'error': 'JSON invalide'}, 400)
         if not isinstance(data, dict):
             return self.send_json({'error': 'JSON invalide'}, 400)
-        name = m.group(2)
+        name = m.group(3)
         if name == 'preview':
             return self.api_preview(data)
+        if v.ro or (name in ('new', 'rename', 'delete') and not v.can_create):
+            return self.send_json({'error': 'action non autorisée (partage en lecture seule)' if v.ro else
+                                   'action non autorisée sur une note partagée'}, 403)
         fn = {'save': self.api_save, 'new': self.api_new, 'rename': self.api_rename, 'delete': self.api_delete,
               'toggle': self.api_toggle}.get(name)
         if not fn:
@@ -2767,7 +3033,7 @@ class Handler(BaseHTTPRequestHandler):
                 if b'\r\n' in f.read(65536):
                     content = content.replace('\r\n', '\n').replace('\n', '\r\n')
             old = p.stat().st_size
-        if not self.store.quota_ok(self.user, len(content.encode('utf-8')) - old):
+        if not self.store.quota_ok(self.vault.owner, len(content.encode('utf-8')) - old):
             return self.send_json({'error': 'quota de stockage dépassé'}, 413)
         if not p.exists():
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -2788,7 +3054,7 @@ class Handler(BaseHTTPRequestHandler):
         if err:
             return self.send_json({'error': err}, 400)
         if not p.exists():
-            if not self.store.quota_ok(self.user, 4096):
+            if not self.store.quota_ok(self.vault.owner, 4096):
                 return self.send_json({'error': 'quota de stockage dépassé'}, 413)
             p.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(p, '')
@@ -2833,6 +3099,7 @@ class Handler(BaseHTTPRequestHandler):
                 updated += 1
         dst.parent.mkdir(parents=True, exist_ok=True)
         os.rename(src, dst)
+        self.store.move_shared_note(self.vault.owner['id'], self.vault.space, old_rel, new_rel)
         self.send_json({'url': self.vault.url(new_rel), 'updated': updated})
 
     def api_delete(self, d):
@@ -2847,6 +3114,8 @@ class Handler(BaseHTTPRequestHandler):
             dest = trash / ('%s (%d)%s' % (p.stem, k, p.suffix))
             k += 1
         shutil.move(str(p), str(dest))
+        rel, v = self.rel_of(p), self.vault
+        self.store.purge_shares(lambda s: (s['owner'], s['space'], s['note']) == (v.owner['id'], v.space, rel))
         self.send_json({'url': self.vault.base + '/'})
 
     def api_toggle(self, d):
