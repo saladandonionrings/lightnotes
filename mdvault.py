@@ -145,6 +145,8 @@ ICONS = {
     'logout': '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
     'spaces': '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
     'share': '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 13.5 6.8 4M15.4 6.5l-6.8 4"/>',
+    'x': '<path d="M18 6 6 18M6 6l12 12"/>',
+    'logo': '<path d="M5 19V6.5l7 6.5 7-6.5V19"/>',
     'lock': '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
 }
 
@@ -158,6 +160,24 @@ def esc(s):
     return html.escape(str(s), quote=True)
 
 
+def hue(s):
+    h = 0
+    for c in str(s):
+        h = (h * 31 + ord(c)) % 360
+    return h
+
+
+def sp_ico(name, big=False):
+    return '<span class="sp-ico%s" style="--h:%d">%s</span>' % (' big' if big else '', hue(name), esc(name[:1].upper()))
+
+
+def avatar(name):
+    return '<span class="av" style="--h:%d">%s</span>' % (hue(name), esc(name[:1].upper()))
+
+
+LOGO = '<span class="logo">%s</span>' % icon('logo')
+
+
 def slugify(value, sep='-'):
     """Même algorithme que l'extension toc de python-markdown."""
     value = unicodedata.normalize('NFKD', str(value)).encode('ascii', 'ignore').decode('ascii')
@@ -168,7 +188,7 @@ def slugify(value, sep='-'):
 # Identifiants utilisés par l'interface : un titre de note ne doit pas pouvoir les masquer.
 RESERVED_IDS = {'app', 'side', 'center', 'top', 'main', 'scroller', 'right', 'tree', 'view', 'ntitle', 'words',
                 'art', 'editor', 'src', 'preview', 'status', 'pos', 'wc', 'outline', 'outline-n', 'toasts', 'ov',
-                'ac', 'peek', 'b-new', 'b-collapse', 'b-switch', 'b-theme', 'b-help', 'b-left', 'b-prev', 'b-more',
+                'ac', 'peek', 'b-new', 'b-collapse', 'b-space', 'b-child', 'b-switch', 'b-theme', 'b-help', 'b-left', 'b-prev', 'b-more',
                 'b-right', 'm-read', 'm-edit', 'q-new', 'q-search', 'mdv'}
 
 
@@ -1293,12 +1313,14 @@ def mini_md(src, _depth=0):
 # --------------------------------------------------------------------------
 
 CSS = r"""
-:root,[data-theme=dark]{--bg:#1e1e1e;--bg2:#181818;--bg3:#262626;--hover:#2b2b2e;--fg:#dcddde;--fg2:#b8b8bd;--muted:#85858e;--faint:#56565e;
- --accent:#8b7cf6;--accent-h:#b0a5ff;--accent-bg:rgba(139,124,246,.16);--border:#2e2e33;--code:#262628;--mark:rgba(255,208,0,.3);
- --shadow:0 12px 40px rgba(0,0,0,.55);--ok:#4ec98f;--err:#f26d6d;--link:#a99bff;color-scheme:dark}
-[data-theme=light]{--bg:#fff;--bg2:#f6f6f7;--bg3:#efeff2;--hover:#e9e9ed;--fg:#222226;--fg2:#45454d;--muted:#73737d;--faint:#a4a4ad;
- --accent:#6d4fe8;--accent-h:#5236d4;--accent-bg:rgba(109,79,232,.11);--border:#e2e2e7;--code:#f3f3f6;--mark:rgba(255,213,0,.5);
- --shadow:0 12px 40px rgba(20,20,40,.16);--ok:#1c9a60;--err:#d63a3a;--link:#5a3ed6;color-scheme:light}
+:root,[data-theme=dark]{--bg:#191919;--bg2:#1f1f1f;--bg3:#2a2a2a;--hover:rgba(255,255,255,.055);--fg:#ebebea;--fg2:#c4c4c1;--muted:#9b9a97;--faint:#5f5e5b;
+ --accent:#8b7cf6;--accent2:#e070c8;--accent-h:#b4a8ff;--accent-bg:rgba(139,124,246,.15);--border:rgba(255,255,255,.085);--code:#232323;--mark:rgba(255,208,0,.28);
+ --shadow:0 20px 50px -12px rgba(0,0,0,.75),0 0 0 1px rgba(255,255,255,.07);--shadow-s:0 1px 2px rgba(0,0,0,.35);
+ --ok:#4cc38a;--err:#ef6b6b;--link:#a99bff;--glass:rgba(30,30,32,.72);color-scheme:dark}
+[data-theme=light]{--bg:#ffffff;--bg2:#f7f7f5;--bg3:#efefed;--hover:rgba(55,53,47,.06);--fg:#37352f;--fg2:#4f4d47;--muted:#787774;--faint:#b4b3ae;
+ --accent:#6e56e8;--accent2:#d04fb0;--accent-h:#5440d0;--accent-bg:rgba(110,86,232,.1);--border:rgba(55,53,47,.1);--code:#f6f5f2;--mark:rgba(255,212,0,.45);
+ --shadow:0 20px 50px -14px rgba(30,25,60,.28),0 0 0 1px rgba(55,53,47,.08);--shadow-s:0 1px 2px rgba(30,25,60,.07);
+ --ok:#1f9d63;--err:#d64545;--link:#5a3ed6;--glass:rgba(255,255,255,.78);color-scheme:light}
 :root{--lw:var(--side-w,272px);--rw:280px;--read-w:760px}
 .no-left{--lw:0px}.no-right{--rw:0px}body.noright{--rw:0px}.wide{--read-w:1120px}
 *{box-sizing:border-box}[hidden]{display:none!important}
@@ -1530,6 +1552,107 @@ summary.tree-row.current{background:var(--accent-bg);color:var(--fg);font-weight
 .subitem:hover{background:var(--hover)}.subitem .i{color:var(--muted)}.subitem small{margin-left:auto;color:var(--faint);font-size:12px}
 .btn.ghost{border-color:transparent;background:transparent;color:var(--muted);padding-left:8px}.btn.ghost:hover{color:var(--fg);background:var(--hover)}
 
+/* ==== finitions ==== */
+body{font-family:"Inter var",Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-feature-settings:"cv11","ss01","ss03";letter-spacing:-.003em}
+button,input,select,textarea{font-family:inherit}
+:focus-visible{outline:2px solid color-mix(in srgb,var(--accent) 70%,transparent);outline-offset:2px}
+.field:focus-visible,.share-input input:focus-visible,#src:focus-visible,.title:focus-visible{outline:none}
+.side-head{padding:10px 8px 6px 8px;gap:2px}
+.vault{display:flex;align-items:center;gap:9px;padding:5px 6px;border-radius:8px;min-width:0;transition:background .12s}
+.vault:hover{background:var(--hover)}.vault .vt{min-width:0;overflow:hidden;text-overflow:ellipsis;line-height:1.3}
+.vault small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sp-ico{flex:none;display:inline-grid;place-items:center;width:24px;height:24px;border-radius:7px;font-size:12.5px;font-weight:700;color:#fff;
+ background:linear-gradient(135deg,hsl(var(--h) 72% 63%),hsl(calc(var(--h) + 40) 68% 50%));box-shadow:inset 0 0 0 1px rgba(255,255,255,.16),0 3px 8px -3px hsl(var(--h) 60% 40% / .7)}
+.sp-ico.big{width:44px;height:44px;border-radius:13px;font-size:19px}
+.searchbtn{background:var(--bg);border-color:var(--border);border-radius:9px;box-shadow:var(--shadow-s);transition:border-color .15s}
+.searchbtn:hover{border-color:color-mix(in srgb,var(--accent) 40%,var(--border))}
+.side-nav a,.tree-row{border-radius:7px;transition:background .12s,color .12s}
+a.tree-row.current,summary.tree-row.current{background:var(--accent-bg);color:var(--fg);box-shadow:inset 2px 0 0 var(--accent)}
+#tree ul ul{border-left-color:var(--border)}
+#top{background:color-mix(in srgb,var(--bg) 85%,transparent);backdrop-filter:saturate(1.4) blur(10px);-webkit-backdrop-filter:saturate(1.4) blur(10px)}
+.seg{border-radius:9px}.seg button{border-radius:7px}
+.title{font-size:2.6em;font-weight:760;letter-spacing:-.024em;line-height:1.15}
+.page-title{font-weight:760;letter-spacing:-.024em}
+.md h1,.md h2,.md h3{letter-spacing:-.016em}
+.md pre{border-radius:12px}.md code{border-radius:6px}
+.btn{border-radius:9px;font-weight:550;transition:background .15s,border-color .15s,box-shadow .15s,transform .08s,filter .15s;box-shadow:var(--shadow-s)}
+.btn:active{transform:translateY(1px)}
+.btn.primary{background:linear-gradient(135deg,var(--accent),color-mix(in srgb,var(--accent) 55%,var(--accent2)));border-color:transparent;
+ box-shadow:0 1px 0 rgba(255,255,255,.2) inset,0 6px 16px -6px color-mix(in srgb,var(--accent) 75%,transparent)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.danger{box-shadow:0 6px 16px -9px var(--err)}
+.btn.ghost{box-shadow:none}
+.field{border-radius:9px;transition:border-color .15s,box-shadow .15s}
+.field:hover{border-color:color-mix(in srgb,var(--fg) 18%,var(--border))}
+.field:focus{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-bg)}
+#ov{background:rgba(8,8,12,.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);animation:fade .16s ease-out}
+[data-theme=light] #ov{background:rgba(40,35,60,.2)}
+.modal{border-radius:16px;border:0;box-shadow:var(--shadow);background:var(--bg2);animation:pop .24s cubic-bezier(.2,1.2,.3,1)}
+[data-theme=light] .modal,[data-theme=light] .menu,[data-theme=light] .toast{background:var(--bg)}
+@keyframes pop{from{transform:translateY(8px) scale(.97);opacity:0}}
+.menu{border-radius:12px;border:0;box-shadow:var(--shadow);padding:6px;background:var(--bg2);animation:pop .16s cubic-bezier(.2,1.2,.3,1)}
+.menu button{border-radius:7px}
+.toast{border-radius:12px;border:0;box-shadow:var(--shadow);background:var(--bg2);display:flex;gap:11px;align-items:center;padding:11px 16px}
+.toast::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent);flex:none;box-shadow:0 0 0 4px var(--accent-bg)}
+.toast.ok::before{background:var(--ok);box-shadow:0 0 0 4px color-mix(in srgb,var(--ok) 22%,transparent)}
+.toast.err::before{background:var(--err);box-shadow:0 0 0 4px color-mix(in srgb,var(--err) 22%,transparent)}
+#peek,#ac{border-radius:14px;border:0;box-shadow:var(--shadow)}
+.card{border-radius:14px;padding:16px 17px;transition:border-color .2s,transform .2s,box-shadow .2s}
+.card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--accent) 45%,var(--border));box-shadow:0 16px 34px -20px color-mix(in srgb,var(--accent) 80%,transparent)}
+.space-card{gap:8px}.space-card .sp-ico{margin-bottom:6px}
+.space-card .tag-s{align-self:flex-start;font-size:11.5px;font-weight:600;color:var(--link);background:var(--accent-bg);padding:1px 8px;border-radius:999px}
+.card.new{align-items:center;justify-content:center;border-style:dashed;color:var(--muted);background:transparent;min-height:120px}
+/* pages de compte */
+html.authpage body{background:radial-gradient(900px 520px at 8% -12%,color-mix(in srgb,var(--accent) 24%,transparent),transparent 62%),
+ radial-gradient(760px 520px at 108% 6%,color-mix(in srgb,var(--accent2) 16%,transparent),transparent 60%),var(--bg);background-attachment:fixed}
+.auth-card{background:var(--glass);backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);border:0;border-radius:20px;box-shadow:var(--shadow);padding:30px 30px 26px}
+.logo{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:9px;background:linear-gradient(135deg,var(--accent),var(--accent2));
+ box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 6px 18px -6px color-mix(in srgb,var(--accent) 85%,transparent)}
+.brand .logo .i{color:#fff;width:17px;height:17px;stroke-width:2.3}
+.brand{font-size:16.5px;letter-spacing:-.015em}
+.auth-h{font-size:1.8em;font-weight:760;letter-spacing:-.028em;margin:24px 0 4px}
+.auth-sub{color:var(--muted);margin:0 0 8px;font-size:14.5px}
+.btn.wide{width:100%;justify-content:center;padding:10px 14px;font-size:14.5px}
+.box{border-radius:14px;background:color-mix(in srgb,var(--bg) 55%,transparent);border-color:var(--border);padding:18px 20px 20px}
+.box h2{font-size:15.5px;font-weight:680;letter-spacing:-.01em}
+.topbar{padding-bottom:14px;border-bottom:1px solid var(--border);margin-bottom:6px}
+.topbar .btn{box-shadow:none;background:transparent;border-color:transparent;color:var(--fg2);padding:6px 10px}
+.topbar .btn:hover{background:var(--hover);color:var(--fg)}
+.alert{border-radius:10px}
+.srow .av{margin-right:2px}
+/* fenêtre de partage */
+.modal-share{width:min(540px,94vw)}
+.share{padding:20px 20px 0}
+.share-head{display:flex;gap:13px;align-items:flex-start}
+.share-ico{display:grid;place-items:center;width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--accent-bg),color-mix(in srgb,var(--accent2) 14%,transparent));color:var(--accent);flex:none}
+.share-ico .i{width:20px;height:20px}
+.share-t{flex:1;min-width:0}.share-t h3{margin:2px 0 2px;font-size:16.5px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.share-t p{margin:0;color:var(--muted);font-size:13px}
+.share-invite{display:flex;gap:8px;margin:18px 0 4px}
+.share-input{flex:1;display:flex;align-items:center;gap:8px;border:1px solid var(--border);border-radius:10px;padding:0 11px;background:var(--bg);transition:border-color .15s,box-shadow .15s;min-width:0}
+.share-input:focus-within{border-color:var(--accent);box-shadow:0 0 0 4px var(--accent-bg)}
+.share-input .i{width:16px;height:16px;color:var(--muted)}
+.share-input input{flex:1;border:0;outline:0;background:transparent;color:var(--fg);font:inherit;font-size:14px;padding:9px 0;min-width:0}
+.share-role{border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--fg);font:inherit;font-size:13.5px;padding:0 8px;cursor:pointer}
+.share-role.sm{border-color:transparent;background:transparent;color:var(--muted);padding:5px 4px;font-size:13px}
+.share-role.sm:hover{background:var(--hover);color:var(--fg)}
+.share-sec{font-size:11px;font-weight:650;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:18px 0 6px}
+.share-list{max-height:min(320px,42vh);overflow:auto;margin:0 -10px;padding:0 2px}
+.share-row{display:flex;align-items:center;gap:11px;padding:7px 8px;border-radius:11px;animation:fade .2s}
+.share-row:hover{background:var(--hover)}
+.share-row .ib{width:28px;height:28px;opacity:.5}.share-row:hover .ib{opacity:1}.share-row .ib.del:hover{color:var(--err)}
+.share-who{flex:1;min-width:0}.share-who b{display:block;font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.share-who small{color:var(--muted);font-size:12px}.share-who .you{color:var(--muted);font-weight:400}
+.share-pill{font-size:12.5px;color:var(--muted);padding:0 6px;white-space:nowrap}
+.av{display:inline-grid;place-items:center;width:32px;height:32px;border-radius:50%;flex:none;font-weight:700;font-size:13.5px;color:#fff;
+ background:linear-gradient(135deg,hsl(var(--h) 70% 62%),hsl(calc(var(--h) + 35) 66% 48%));box-shadow:inset 0 0 0 1px rgba(255,255,255,.18)}
+.share-foot{display:flex;align-items:center;gap:9px;margin:16px -20px 0;padding:12px 20px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px;
+ background:color-mix(in srgb,var(--bg3) 35%,transparent);border-radius:0 0 16px 16px}
+.share-foot .i{width:15px;height:15px;flex:none}.share-foot span{flex:1}.share-foot a{color:var(--link);text-decoration:none;white-space:nowrap}
+.share-foot a:hover{text-decoration:underline}
+.share-load{height:44px;margin:0 8px;border-radius:11px;background:linear-gradient(90deg,var(--hover),transparent,var(--hover));background-size:200% 100%;animation:shim 1.2s infinite linear}
+@keyframes shim{to{background-position:-200% 0}}
+
 /* ---- petits écrans ---- */
 @media (max-width:1100px){
  :root{--rw:0px}
@@ -1544,7 +1667,8 @@ summary.tree-row.current{background:var(--accent-bg);color:var(--fg);font-weight
  .seg button span{display:none}
  .edwrap{grid-template-columns:1fr!important}#preview{display:none!important}
  #src{padding:22px 18px 45vh}
- .auth-card{padding:20px 16px}
+ .auth-card{padding:22px 16px}
+ .share-invite{flex-wrap:wrap}.share-input{flex-basis:100%}.share-role{padding:8px}
 }
 """
 
@@ -1568,17 +1692,18 @@ const SK=k=>k+':'+B;
 const CAN=!MDV.ro&&!MDV.single;   /* créer / renommer / supprimer */
 const sc=$('#scroller');
 
-async function api(url,data,retry){
+async function call(url,data,retry){
   const h={'X-CSRF':TOKEN};let opt={headers:h,credentials:'same-origin'};
   if(data!==undefined){h['Content-Type']='application/json';opt={method:'POST',headers:h,credentials:'same-origin',body:JSON.stringify(data)};}
-  const r=await fetch(B+url,opt);let j={};try{j=await r.json();}catch(e){}
+  const r=await fetch(url,opt);let j={};try{j=await r.json();}catch(e){}
   if(r.status===401||(r.status===403&&j.code==='csrf')){
-    if(!retry){try{const c=await fetch('/api/csrf',{credentials:'same-origin'});if(c.ok){TOKEN=(await c.json()).csrf;return api(url,data,true);}}catch(e){}}
+    if(!retry){try{const c=await fetch('/api/csrf',{credentials:'same-origin'});if(c.ok){TOKEN=(await c.json()).csrf;return call(url,data,true);}}catch(e){}}
     const e=new Error('session expirée — reconnectez-vous dans un autre onglet pour ne rien perdre');e.status=401;throw e;
   }
   if(!r.ok){const e=new Error(j.error||('HTTP '+r.status));e.status=r.status;throw e;}
   return j;
 }
+const api=(u,d)=>call(B+u,d);
 
 /* ---------- toasts ---------- */
 function toast(msg,kind,ms){
@@ -1590,9 +1715,9 @@ const flash=LS.get('flash',null);if(flash){LS.set('flash',null);setTimeout(()=>t
 
 /* ---------- overlay / dialogues ---------- */
 let ovEl=null;
-function openOverlay(inner,onClose){
+function openOverlay(inner,onClose,cls){
   closeOverlay();ovEl=document.createElement('div');ovEl.id='ov';
-  ovEl.innerHTML='<div class="modal">'+inner+'</div>';ovEl._close=onClose;
+  ovEl.innerHTML='<div class="modal '+(cls||'')+'">'+inner+'</div>';ovEl._close=onClose;
   ovEl.addEventListener('mousedown',e=>{if(e.target===ovEl)closeOverlay();});
   document.body.appendChild(ovEl);return ovEl.firstChild;
 }
@@ -1630,6 +1755,41 @@ function showHelp(){
   const b=$('[data-ok]',m);b.focus();b.onclick=closeOverlay;
 }
 
+/* ---------- partage : fenêtre intégrée ---------- */
+const AV=n=>{let h=0;for(const c of String(n))h=(h*31+c.charCodeAt(0))%360;return '<span class="av" style="--h:'+h+'">'+escH(String(n).slice(0,1).toUpperCase())+'</span>';};
+const ROLE=r=>r==='w'?'Peut modifier':'Peut lire';
+function openShare(note,label,kids){
+  if(!MDV.owner)return;
+  const sub=note?(kids?'Cette note et ses '+kids+' sous-note(s)':'Cette note uniquement'):'Toutes les notes de cet espace';
+  const m=openOverlay('<div class="share"><div class="share-head"><span class="share-ico">'+ICON(note?'file':'spaces')+'</span>'+
+    '<div class="share-t"><h3>Partager « '+escH(label)+' »</h3><p>'+escH(sub)+'</p></div><button class="ib" data-x title="Fermer (Échap)">'+ICON('x')+'</button></div>'+
+    '<form class="share-invite"><label class="share-input">'+ICON('user')+'<input name="to" placeholder="Identifiant de la personne à inviter" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32" required></label>'+
+    '<select class="share-role" name="role" title="Droits"><option value="r">Peut lire</option><option value="w">Peut modifier</option></select>'+
+    '<button class="btn primary">Inviter</button></form>'+
+    '<div class="share-sec">Personnes ayant accès</div><div class="share-list"><div class="share-load"></div></div>'+
+    '<div class="share-foot">'+ICON('lock')+'<span>Privé : seules les personnes invitées y ont accès.</span><a href="/shares">Tous mes partages</a></div></div>',null,'modal-share');
+  const list=$('.share-list',m),form=$('form',m),inp=$('input',form),body={space:MDV.space,note:note||''};
+  $('[data-x]',m).onclick=closeOverlay;
+  function draw(j){
+    let h='<div class="share-row">'+AV(MDV.user)+'<div class="share-who"><b>'+escH(MDV.user)+' <span class="you">(vous)</span></b><small>Propriétaire</small></div><span class="share-pill">Accès complet</span></div>';
+    (j.inherited||[]).forEach(s=>{h+='<div class="share-row">'+AV(s.to)+'<div class="share-who"><b>'+escH(s.to)+'</b><small>'+escH(s.via)+'</small></div><span class="share-pill">'+ROLE(s.role)+'</span></div>';});
+    (j.shares||[]).forEach(s=>{h+='<div class="share-row" data-id="'+escH(s.id)+'" data-to="'+escH(s.to)+'">'+AV(s.to)+'<div class="share-who"><b>'+escH(s.to)+'</b><small>Invité'+(s.since?' le '+escH(s.since):'')+'</small></div>'+
+      '<select class="share-role sm" title="Changer les droits"><option value="r"'+(s.role==='r'?' selected':'')+'>Peut lire</option><option value="w"'+(s.role==='w'?' selected':'')+'>Peut modifier</option></select>'+
+      '<button class="ib copy-l" title="Copier son lien d\'accès">'+ICON('link')+'</button><button class="ib del" title="Retirer l\'accès">'+ICON('x')+'</button></div>';});
+    list.innerHTML=h;
+  }
+  const load=()=>call('/api/shares?space='+encodeURIComponent(MDV.space)+'&note='+encodeURIComponent(note||'')).then(draw).catch(e=>{list.innerHTML='<p class="share-pill">'+escH(e.message)+'</p>';});
+  form.onsubmit=async e=>{e.preventDefault();const to=inp.value.trim().toLowerCase();if(!to)return;
+    try{draw(await call('/api/shares/new',Object.assign({to,role:form.role.value},body)));inp.value='';toast(to+' a maintenant accès','ok');}
+    catch(err){toast(err.message,'err');inp.focus();}};
+  list.addEventListener('change',async e=>{const row=e.target.closest('.share-row[data-id]');if(!row)return;
+    try{draw(await call('/api/shares/new',Object.assign({to:row.dataset.to,role:e.target.value},body)));toast('Droits mis à jour','ok',1400);}catch(err){toast(err.message,'err');load();}});
+  list.addEventListener('click',async e=>{const row=e.target.closest('.share-row[data-id]');if(!row)return;
+    if(e.target.closest('.del')){try{await call('/api/shares/delete',{id:row.dataset.id});row.style.opacity='0';toast('Accès retiré pour '+row.dataset.to,'ok');setTimeout(load,150);}catch(err){toast(err.message,'err');}}
+    else if(e.target.closest('.copy-l'))copyText(location.origin+'/p/'+row.dataset.id+'/','Lien copié — il ne fonctionne que pour '+row.dataset.to);});
+  load();setTimeout(()=>inp.focus(),30);
+}
+
 /* ---------- menus ---------- */
 let menuEl=null;
 function closeMenu(){if(menuEl){menuEl.remove();menuEl=null;}}
@@ -1642,9 +1802,9 @@ function openMenu(anchor,entries){
     b.onclick=()=>{closeMenu();en.act();};menuEl.appendChild(b);
   });
   document.body.appendChild(menuEl);
-  const r=anchor.getBoundingClientRect();
+  const r=anchor.getBoundingClientRect(),left=anchor.closest('#side')?r.left:r.right-menuEl.offsetWidth;
   menuEl.style.top=Math.min(innerHeight-menuEl.offsetHeight-8,r.bottom+6)+'px';
-  menuEl.style.left=Math.max(8,Math.min(innerWidth-menuEl.offsetWidth-8,r.right-menuEl.offsetWidth))+'px';
+  menuEl.style.left=Math.max(8,Math.min(innerWidth-menuEl.offsetWidth-8,left))+'px';
   setTimeout(()=>document.addEventListener('mousedown',function h(e){
     if(!menuEl||!menuEl.contains(e.target)){closeMenu();document.removeEventListener('mousedown',h);}}),0);
 }
@@ -1675,7 +1835,15 @@ $$('#tree details').forEach(d=>{
   const p=d.dataset.path;if(openSet.has(p))d.open=true;
   d.addEventListener('toggle',()=>{d.open?openSet.add(p):openSet.delete(p);LS.set(SK('open'),[...openSet]);});
 });
-$('#b-collapse').onclick=()=>{$$('#tree details').forEach(d=>d.open=false);openSet.clear();LS.set(SK('open'),[]);};
+const collapseAll=()=>{$$('#tree details').forEach(d=>d.open=false);openSet.clear();LS.set(SK('open'),[]);};
+$('#b-space').onclick=e=>openMenu(e.currentTarget,[
+  MDV.owner&&{icon:'share',label:"Partager l'espace…",act:()=>openShare(null,MDV.space)},
+  CAN&&{icon:'fileplus',label:'Nouvelle note',kb:'Alt+N',act:()=>newNote('')},
+  {icon:'collapse',label:"Replier l'arborescence",act:collapseAll},
+  null,
+  {icon:'link',label:'Tous mes partages',act:()=>location.href='/shares'},
+  {icon:'spaces',label:"Changer d'espace",act:()=>location.href='/'}
+].filter(x=>x!==false));
 const curRow=$('#tree a.current');
 if(curRow){const s=$('.side-scroll');s.scrollTop=Math.max(0,curRow.offsetTop-s.clientHeight/2);}
 $('#tree').addEventListener('click',e=>{const b=e.target.closest('button.add');if(b){e.preventDefault();e.stopPropagation();newNote(b.dataset.folder);}});
@@ -2063,7 +2231,7 @@ if(NOTE){
     CAN&&{icon:'fileplus',label:'Nouvelle sous-note',act:newChild},
     CAN&&{icon:'pencil',label:'Renommer…',act:()=>ask('Renommer la note',NAME,'Renommer','Les [[liens]] des autres notes seront mis à jour.').then(v=>{if(v&&v!==NAME)rename(v);})},
     {icon:'link',label:'Copier le lien [[…]]',act:()=>copyText('[['+NAME+']]','Lien copié')},
-    MDV.owner&&{icon:'share',label:'Partager la note…',act:()=>location.href='/shares?space='+encodeURIComponent(MDV.space)+'&note='+encodeURIComponent(NOTE)},
+    MDV.owner&&{icon:'share',label:'Partager…',act:()=>openShare(NOTE,NAME,KIDS)},
     null,
     {icon:'width',label:D.classList.contains('wide')?'Largeur de lecture normale':'Largeur de lecture étendue',act:()=>{D.classList.toggle('wide');LS.set('wide',D.classList.contains('wide'));}},
     {icon:'type',label:D.classList.contains('mono')?'Éditeur : police proportionnelle':'Éditeur : police à chasse fixe',act:()=>{D.classList.toggle('mono');LS.set('mono',D.classList.contains('mono'));}},
@@ -2100,9 +2268,9 @@ PAGE = """<!doctype html>
 <body class="{{BODYCLS}}">
 <div id="app">
 <aside id="side">
-  <div class="side-head"><a class="vault" href="{{BASE}}/" title="Espace « {{VAULTNAME}} »">{{VAULT}}</a>
+  <div class="side-head"><a class="vault" href="{{BASE}}/" title="Espace « {{VAULTNAME}} »">{{SPICO}}<span class="vt">{{VAULT}}</span></a>
     {{NEWBTN}}
-    <button class="ib" id="b-collapse" title="Tout replier">{{I_COLLAPSE}}</button></div>
+    <button class="ib" id="b-space" title="Options de l'espace">{{I_DOTS}}</button></div>
   <button class="searchbtn" id="b-switch">{{I_SEARCH}}<span>Rechercher…</span><kbd>Ctrl K</kbd></button>
   <nav class="side-nav">{{NAV}}</nav>
   <div class="side-scroll">
@@ -2362,7 +2530,7 @@ class Handler(BaseHTTPRequestHandler):
                 '<a class="btn" href="/account">%s Compte</a>'
                 '<form class="inline" method="post" action="/logout"><input type="hidden" name="csrf" value="%s">'
                 '<button class="btn">%s Déconnexion</button></form></div>'
-                % (icon('lock'), esc(self.user['name']), icon('spaces'), icon('share'), icon('user'), esc(self.sess['csrf']),
+                % (LOGO, esc(self.user['name']), icon('spaces'), icon('share'), icon('user'), esc(self.sess['csrf']),
                    icon('logout')))
 
     def page(self, title, main, right='', current=None, idx=None, mainattr='', crumbs=None,
@@ -2382,13 +2550,12 @@ class Handler(BaseHTTPRequestHandler):
                         '<a class="tag" href="%s/search?q=%s">#%s<span class="n">%d</span></a>'
                         % (v.base, urllib.parse.quote('#' + t), esc(t), c) for t, c in top))
         links = [('home', v.base + '/', 'home', 'Accueil'), ('search', v.base + '/search', 'search', 'Recherche')]
-        if not v.shared_by:
-            links.append(('share', '/shares?space=' + urllib.parse.quote(v.space), 'share', 'Partager'))
         links.append(('spaces', '/', 'spaces', 'Espaces'))
         nav = ''.join('<a href="%s"%s>%s%s</a>' % (esc(href), ' class="on"' if key == nav_on else '', icon(ic), lab)
                       for key, href, ic, lab in links)
         mdv = {'csrf': self.sess['csrf'], 'base': v.base, 'icons': ICONS, 'notes': [[r, stem(r)] for r in idx.notes],
-               'ro': v.ro, 'single': bool(v.only), 'owner': not v.shared_by, 'space': v.space}
+               'ro': v.ro, 'single': bool(v.only), 'owner': not v.shared_by, 'space': v.space,
+               'user': self.user['name']}
         label = esc(v.name)
         if v.shared_by:
             label += '<small>%s par %s · %s</small>' % ('note partagée' if v.only else 'partagé', esc(v.shared_by),
@@ -2407,7 +2574,7 @@ class Handler(BaseHTTPRequestHandler):
                       if v.can_create else '',
             'CRUMBS': crumbs if crumbs is not None else '<b>%s</b>' % esc(title),
             'ACTIONS': actions,
-            'I_FILEPLUS': icon('fileplus'), 'I_COLLAPSE': icon('collapse'), 'I_SEARCH': icon('search'),
+            'I_FILEPLUS': icon('fileplus'), 'I_DOTS': icon('dots'), 'SPICO': sp_ico(v.name), 'I_SEARCH': icon('search'),
             'I_HELP': icon('help'), 'I_SIDE': icon('side'), 'I_USER': icon('user'), 'I_LOGOUT': icon('logout'),
         }
         return re.sub(r'\{\{(\w+)\}\}', lambda m: vals[m.group(1)], PAGE), nonce
@@ -2473,6 +2640,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'csrf': self.sess['csrf']})
         if path == '/shares':
             return self.shares_page(qv('m'), qv('space'), qv('note'))
+        if path == '/api/shares':
+            return self.japi_shares(qv('space'), qv('note'))
         m = re.match(r'^/([sp])/([^/]+)(/.*)?$', path)
         if m:
             v = self.get_vault(m.group(1), m.group(2))
@@ -2511,21 +2680,23 @@ class Handler(BaseHTTPRequestHandler):
         pre = self.pre_token()
         signup = ('<div class="auth-foot">Pas encore de compte ? <a href="/signup">Créer un compte</a></div>'
                   if self.cfg['signup'] else '')
-        body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">Connexion</h1>%s%s'
+        body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">Bon retour 👋</h1>'
+                '<p class="auth-sub">Connectez-vous pour retrouver vos notes.</p>%s%s'
                 '<form method="post" action="/login"><input type="hidden" name="pre" value="%s">'
                 '<input type="hidden" name="next" value="%s">'
                 '<label class="lbl">Identifiant<input class="field" name="username" autocomplete="username" '
                 'autocapitalize="none" spellcheck="false" required maxlength="32" value="%s"%s></label>'
                 '<label class="lbl">Mot de passe<input class="field" type="password" name="password" '
                 'autocomplete="current-password" required maxlength="%d"%s></label>'
-                '<div class="btns"><button class="btn primary">Se connecter</button></div></form>%s'
-                % (icon('lock'), self.alert(msg), '<div class="alert err" role="alert">%s</div>' % esc(err) if err else '',
+                '<div class="btns"><button class="btn primary wide">Se connecter</button></div></form>%s'
+                % (LOGO, self.alert(msg), '<div class="alert err" role="alert">%s</div>' % esc(err) if err else '',
                    pre, esc(nxt), esc(name), '' if name else ' autofocus', PW_MAX, ' autofocus' if name else '', signup))
         self.auth_page('Connexion', body, code=code, headers=[self.cookie(self.cn(pre=True), pre, 3600)])
 
     def signup_page(self, err='', name='', code=200):
         pre = self.pre_token()
-        body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">Créer un compte</h1>%s'
+        body = ('<div class="brand">%s mdvault</div><h1 class="auth-h">Créer un compte</h1>'
+                '<p class="auth-sub">Vos notes, privées par défaut, partageables quand vous le voulez.</p>%s'
                 '<form method="post" action="/signup"><input type="hidden" name="pre" value="%s">'
                 '<label class="lbl">Identifiant (3 à 32 caractères : a-z, 0-9, . _ -)<input class="field" name="username" '
                 'autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="32" '
@@ -2534,17 +2705,17 @@ class Handler(BaseHTTPRequestHandler):
                 'autocomplete="new-password" required minlength="%d" maxlength="%d"></label>'
                 '<label class="lbl">Confirmer le mot de passe<input class="field" type="password" name="password2" '
                 'autocomplete="new-password" required minlength="%d" maxlength="%d"></label>'
-                '<div class="btns"><button class="btn primary">Créer le compte</button></div></form>'
+                '<div class="btns"><button class="btn primary wide">Créer le compte</button></div></form>'
                 '<div class="auth-foot">Déjà inscrit ? <a href="/login">Se connecter</a></div>'
-                % (icon('lock'), '<div class="alert err" role="alert">%s</div>' % esc(err) if err else '', pre, esc(name),
+                % (LOGO, '<div class="alert err" role="alert">%s</div>' % esc(err) if err else '', pre, esc(name),
                    PW_MIN, PW_MIN, PW_MAX, PW_MIN, PW_MAX))
         self.auth_page('Inscription', body, code=code, headers=[self.cookie(self.cn(pre=True), pre, 3600)])
 
     # --- pages du compte ---
     def spaces_page(self, msg=''):
         spaces = self.store.list_spaces(self.user)
-        cards = ''.join('<a class="card" href="/s/%s/"><b>%s</b><p>%d note(s)</p></a>'
-                        % (esc(s), esc(s), count_notes(self.store.user_dir(self.user) / s)) for s in spaces)
+        cards = ''.join('<a class="card space-card" href="/s/%s/">%s<b>%s</b><p>%d note(s)</p></a>'
+                        % (esc(s), sp_ico(s, True), esc(s), count_notes(self.store.user_dir(self.user) / s)) for s in spaces)
         quota = ''
         if self.store.quota:
             quota = ' · %.1f / %d Mo utilisés' % (self.store.usage(self.user) / 1048576, self.store.quota // 1048576)
@@ -2554,18 +2725,19 @@ class Handler(BaseHTTPRequestHandler):
         if not cards:
             cards = '<p class="lead">Aucun espace : créez-en un ci-dessous.</p>'
         if shared:
-            cards += '</div><h2 class="h3" style="margin-top:26px">Partagés avec moi</h2><div class="cards">' + ''.join(
-                '<a class="card" href="/p/%s/"><b>%s</b><p>%s par %s</p><small>%s</small></a>'
-                % (esc(sid), esc(stem(s['note']) if s['note'] else s['space']), 'Note partagée' if s['note'] else 'Espace partagé',
-                   esc(names[s['owner']]), 'lecture et écriture' if s['role'] == 'w' else 'lecture seule')
+            cards += '</div><h2 class="h3" style="margin-top:30px">Partagés avec moi</h2><div class="cards">' + ''.join(
+                '<a class="card space-card" href="/p/%s/">%s<b>%s</b><p>%s par %s</p><span class="tag-s">%s</span></a>'
+                % (esc(sid), sp_ico(stem(s['note']) if s['note'] else s['space'], True),
+                   esc(stem(s['note']) if s['note'] else s['space']), 'Note partagée' if s['note'] else 'Espace partagé',
+                   esc(names[s['owner']]), 'Peut modifier' if s['role'] == 'w' else 'Peut lire')
                 for sid, s in shared)
-        body = (self.topbar() + '<h1 class="auth-h">Vos espaces</h1><p class="lead">Chaque espace est un dossier de notes '
-                'privé, visible par vous seul%s.</p>%s<div class="cards">%s</div>'
+        body = (self.topbar() + '<h1 class="auth-h">Bonjour %s</h1><p class="lead">Chaque espace est un dossier de notes '
+                'privé, que vous pouvez partager quand vous le souhaitez%s.</p>%s<div class="cards">%s</div>'
                 '<div class="box"><h2>Nouvel espace</h2><form method="post" action="/spaces/new" class="row">'
                 '<input type="hidden" name="csrf" value="%s"><input class="field" name="name" required maxlength="40" '
                 'placeholder="ex. travail, perso, cours" autocomplete="off" spellcheck="false">'
                 '<button class="btn primary">%s Créer</button></form></div>'
-                % (quota, self.alert(msg), cards or '<p class="lead">Aucun espace : créez-en un ci-dessous.</p>',
+                % (esc(self.user['name']), quota, self.alert(msg), cards,
                    esc(self.sess['csrf']), icon('plus')))
         self.auth_page('Espaces', body, wide=True)
 
@@ -2623,10 +2795,10 @@ class Handler(BaseHTTPRequestHandler):
             out = ''
             for sid, s in items:
                 who = names.get(s['to'] if mine else s['owner'], '?')
-                out += ('<div class="srow"><div class="sinfo"><b>%s</b> %s<small>%s%s %s</small></div>%s'
+                out += ('<div class="srow">%s<div class="sinfo"><b>%s</b> %s<small>%s%s %s</small></div>%s'
                         '<form method="post" action="/shares/delete">%s<input type="hidden" name="id" value="%s">'
                         '<button class="btn">%s</button></form></div>'
-                        % (what(s), role(s), 'dans l\'espace %s · ' % esc(s['space']) if s['note'] else '',
+                        % (avatar(who), what(s), role(s), 'dans l\'espace %s · ' % esc(s['space']) if s['note'] else '',
                            'avec' if mine else 'de', esc(who),
                            '' if mine else '<a class="btn primary" href="/p/%s/">Ouvrir</a>' % esc(sid),
                            hid, esc(sid), 'Révoquer' if mine else 'Retirer'))
@@ -2653,39 +2825,95 @@ class Handler(BaseHTTPRequestHandler):
                 '<div class="box"><h2>Partagés avec moi</h2>%s</div>' % (rows(tome, False) or '<p>Rien pour l\'instant.</p>'))
         self.auth_page('Partages', body, wide=True)
 
-    def do_share_new(self, form):
-        st = self.store
-        space = form.get('space') or ''
-        if space not in st.list_spaces(self.user):
-            return self.redirect('/shares?m=share-space')
-        note = (form.get('note') or '').strip().replace('\\', '/').strip('/') or None
-        if note:
-            if not is_note(note):
-                note += '.md'
-            root = (st.user_dir(self.user) / space).resolve()
-            p = (root / note).resolve()
-            if (len(note) > 512 or '\x00' in note or any(x.startswith('.') for x in note.split('/'))
-                    or root not in p.parents or not p.is_file()):
-                return self.redirect('/shares?m=share-note&space=' + urllib.parse.quote(space))
-            note = p.relative_to(root).as_posix()
-        to = st.get((form.get('to') or '').strip().lower()[:64])
-        q = '&space=%s&note=%s' % (urllib.parse.quote(space), urllib.parse.quote(note or ''))
-        if not to:
-            return self.redirect('/shares?m=share-user' + q)
-        if to['id'] == self.user['id']:
-            return self.redirect('/shares?m=share-self' + q)
-        if sum(1 for s in st.shares().values() if s['owner'] == self.user['id']) >= MAX_SHARES:
-            return self.redirect('/shares?m=share-max')
-        st.add_share(self.user, space, note, to, 'w' if form.get('role') == 'w' else 'r')
-        self.log_auth('partage %s/%s%s -> %s' % (self.user['name'], space, '/' + note if note else '', to['name']))
-        self.redirect('/shares?m=share-ok')
+    def share_note(self, space, note):
+        """Chemin normalisé d'une note de l'espace, None (espace entier) ou False (invalide)."""
+        note = (note or '').strip().replace('\\', '/').strip('/') if isinstance(note, str) else ''
+        if not note:
+            return None
+        if not is_note(note):
+            note += '.md'
+        root = (self.store.user_dir(self.user) / space).resolve()
+        p = (root / note).resolve()
+        if (len(note) > 512 or '\x00' in note or any(x.startswith('.') for x in note.split('/'))
+                or root not in p.parents or not p.is_file()):
+            return False
+        return p.relative_to(root).as_posix()
 
-    def do_share_delete(self, form):
-        sid, uid = form.get('id') or '', self.user['id']
+    def create_share(self, space, note, to_name, role):
+        st = self.store
+        if not isinstance(space, str) or space not in st.list_spaces(self.user):
+            return 'share-space', None
+        note = self.share_note(space, note)
+        if note is False:
+            return 'share-note', None
+        to = st.get((to_name or '').strip().lower()[:64] if isinstance(to_name, str) else '')
+        if not to:
+            return 'share-user', note
+        if to['id'] == self.user['id']:
+            return 'share-self', note
+        mine = [v for v in st.shares().values() if v['owner'] == self.user['id']]
+        exists = any((v['space'], v['note'], v['to']) == (space, note, to['id']) for v in mine)
+        if len(mine) >= MAX_SHARES and not exists:
+            return 'share-max', note
+        st.add_share(self.user, space, note, to, 'w' if role == 'w' else 'r')
+        self.log_auth('partage %s/%s%s -> %s (%s)' % (self.user['name'], space, '/' + note if note else '', to['name'], role))
+        return None, note
+
+    def remove_share(self, sid):
+        uid = self.user['id']
         sh = self.store.get_share(sid)
         if sh and uid in (sh['owner'], sh['to']):
             self.store.purge_shares(lambda s, sh=sh: s == sh)
+            return True
+        return False
+
+    def do_share_new(self, form):
+        space = form.get('space') or ''
+        err, note = self.create_share(space, form.get('note'), form.get('to'), form.get('role'))
+        if err:
+            return self.redirect('/shares?m=%s&space=%s&note=%s' % (err, urllib.parse.quote(space),
+                                                                   urllib.parse.quote(note or '')))
+        self.redirect('/shares?m=share-ok')
+
+    def do_share_delete(self, form):
+        self.remove_share(form.get('id') or '')
         self.redirect('/shares?m=share-del')
+
+    def target_shares(self, space, note):
+        """Personnes ayant accès à un espace ou une note (directement ou via un parent)."""
+        names = {u['id']: n for n, u in self.store.users().items()}
+        direct, inherited = [], []
+        for sid, s in self.store.shares().items():
+            if s['owner'] != self.user['id'] or s['space'] != space or s['to'] not in names:
+                continue
+            row = {'to': names[s['to']], 'role': s['role']}
+            if s['note'] == note:
+                direct.append(dict(row, id=sid, since=time.strftime('%d/%m/%Y', time.localtime(s.get('created', 0)))))
+            elif note and s['note'] is None:
+                inherited.append(dict(row, via='Accès via l\'espace « %s »' % space))
+            elif note and s['note'] and note.startswith(child_dir(s['note']) + '/'):
+                inherited.append(dict(row, via='Accès via « %s »' % stem(s['note'])))
+        key = lambda r: r['to']
+        return {'shares': sorted(direct, key=key), 'inherited': sorted(inherited, key=key)}
+
+    def japi_shares(self, space, note):
+        if space not in self.store.list_spaces(self.user):
+            return self.send_json({'error': 'espace introuvable'}, 404)
+        note = self.share_note(space, note)
+        if note is False:
+            return self.send_json({'error': 'note introuvable'}, 404)
+        self.send_json(self.target_shares(space, note))
+
+    def japi_share_new(self, d):
+        err, note = self.create_share(d.get('space'), d.get('note'), d.get('to'), d.get('role'))
+        if err:
+            return self.send_json({'error': MSGS[err][1]}, 400)
+        self.send_json(self.target_shares(d.get('space'), note))
+
+    def japi_share_delete(self, d):
+        if not self.remove_share(d.get('id') if isinstance(d.get('id'), str) else ''):
+            return self.send_json({'error': 'partage introuvable'}, 404)
+        self.send_json({'ok': True})
 
     # --- pages d'un espace ---
     def home(self):
@@ -2878,7 +3106,7 @@ class Handler(BaseHTTPRequestHandler):
         ctype = (self.headers.get('Content-Type') or '').split(';')[0].strip().lower()
         self.load_auth()
 
-        if not is_api:
+        if not is_api and not path.startswith('/api/'):
             if ctype != 'application/x-www-form-urlencoded':
                 return self.send_json({'error': 'type de contenu refusé'}, 415)
             try:
@@ -2910,6 +3138,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({'error': 'jeton CSRF invalide', 'code': 'csrf'}, 403)
         if ctype != 'application/json':
             return self.send_json({'error': 'type de contenu refusé'}, 415)
+        if path.startswith('/api/'):
+            try:
+                data = json.loads(raw or b'{}')
+            except ValueError:
+                data = None
+            if not isinstance(data, dict):
+                return self.send_json({'error': 'JSON invalide'}, 400)
+            fn = {'/api/shares/new': self.japi_share_new, '/api/shares/delete': self.japi_share_delete}.get(path)
+            return fn(data) if fn else self.send_json({'error': 'route inconnue'}, 404)
         m = re.match(r'^/([sp])/([^/]+)/api/(\w+)$', path)
         v = self.get_vault(m.group(1), m.group(2)) if m else None
         if v is None:
